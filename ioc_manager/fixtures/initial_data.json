@@ -1,0 +1,77 @@
+[
+  {
+    "model": "ioc_manager.ioctype",
+    "pk": 1,
+    "fields": {
+      "name": "Hash"
+    }
+  },
+  {
+    "model": "ioc_manager.ioctype",
+    "pk": 2,
+    "fields": {
+      "name": "IP"
+    }
+  },
+  {
+    "model": "ioc_manager.ioctype",
+    "pk": 3,
+    "fields": {
+      "name": "Dominio"
+    }
+  },
+  {
+    "model": "ioc_manager.ioctype",
+    "pk": 4,
+    "fields": {
+      "name": "URL"
+    }
+  },
+  {
+    "model": "ioc_manager.ioctype",
+    "pk": 5,
+    "fields": {
+      "name": "Correo"
+    }
+  },
+  {
+    "model": "ioc_manager.tool",
+    "pk": 1,
+    "fields": {
+      "name": "EDR",
+      "threshold": "90000 IOC EDR"
+    }
+  },
+  {
+    "model": "ioc_manager.tool",
+    "pk": 2,
+    "fields": {
+      "name": "PROXY",
+      "threshold": null
+    }
+  },
+  {
+    "model": "ioc_manager.tool",
+    "pk": 3,
+    "fields": {
+      "name": "PROOFPOINT",
+      "threshold": null
+    }
+  },
+  {
+    "model": "ioc_manager.firewall",
+    "pk": 1,
+    "fields": {
+      "name": "FW INTERNET QUITO",
+      "vendor": "KYndryl"
+    }
+  },
+  {
+    "model": "ioc_manager.firewall",
+    "pk": 2,
+    "fields": {
+      "name": "FW MULTICANALIDAD",
+      "vendor": "TEUNO / CHECKPOINT"
+    }
+  }
+]

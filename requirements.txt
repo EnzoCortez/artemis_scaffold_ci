@@ -1,0 +1,6 @@
+Django>=4.2
+djangorestframework
+mssql-django
+pyodbc
+waitress
+python-dotenv
