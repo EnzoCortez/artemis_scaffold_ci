@@ -38,11 +38,16 @@ class IocEntry(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='BLOQUEADO')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
-    
+
+    # NUEVOS CAMPOS
+    source = models.CharField(max_length=100, null=True, blank=True)          
+    upload_batch = models.CharField(max_length=36, null=True, blank=True, db_index=True)  
+
     class Meta:
         unique_together = ('ioc_type', 'value')
-        indexes = [models.Index(fields=['ioc_type', 'value']), models.Index(fields=['status'])]
-    def __str__(self): return f"{self.value} ({self.ioc_type})"
+        indexes = [models.Index(fields=['ioc_type', 'value']), models.Index(fields=['status']), models.Index(fields=['upload_batch'])]
+    def __str__(self):
+        return f"{self.value} ({self.ioc_type})"
     
 class IocTool(models.Model):
     ioc = models.ForeignKey(IocEntry, on_delete=models.CASCADE)
@@ -61,7 +66,3 @@ class IocHistory(models.Model):
     class Meta:
         indexes = [models.Index(fields=['ioc', 'timestamp'])]
     def __str__(self): return f"{self.ioc} - {self.action} @ {self.timestamp}"
-
-
-
-

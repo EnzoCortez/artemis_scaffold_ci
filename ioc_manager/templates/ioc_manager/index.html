@@ -7,8 +7,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Artemis - Gestión de IoCs</title>
   <link rel="stylesheet" href="{% static 'css/styles.css' %}">
-
 </head>
+
 <body>
   <header>
     <h1>Artemis</h1>
@@ -59,7 +59,7 @@
     </div>
   </div>
 
-    <!-- MÓDULO GESTIÓN -->
+  <!-- MÓDULO GESTIÓN -->
   <div id="gestion" class="tab-content">
     <div class="section">
       <h3>Gestión de Estados</h3>
@@ -73,7 +73,7 @@
           <thead>
             <tr>
               <th>IoC</th>
-              <th>Herramienta</th>
+              <th>Tipo de IoC</th>
               <th>Estado</th>
               <th>Acción</th>
             </tr>
@@ -83,34 +83,46 @@
       </fieldset>
 
       <!-- CARGA MASIVA DESDE TXT -->
-<fieldset>
-  <legend>Carga masiva por archivo TXT</legend>
-  <p>Seleccione un archivo .txt con IoCs (uno por línea) para actualizar su estado.</p>
-  <input type="file" id="fileEstados" accept=".txt" />
-  <label for="nuevoEstado">Seleccione el nuevo estado:</label>
-  <select id="nuevoEstado">
-    <option value="BLOQUEADO">BLOQUEADO</option>
-    <option value="DEPURADO">DEPURADO</option>
-  </select>
-  <button class="action" onclick="cargarEstadosDesdeTxt()">Actualizar Estados</button>
-  <div id="msgEstados" class="message success"></div>
-  </fieldset>
-
-</div>
-
+      <fieldset>
+        <legend>Carga masiva por archivo TXT</legend>
+        <p>Seleccione un archivo .txt con IoCs (uno por línea) para actualizar su estado.</p>
+        <input type="file" id="fileEstados" accept=".txt" />
+        <label for="nuevoEstado">Seleccione el nuevo estado:</label>
+        <select id="nuevoEstado">
+          <option value="BLOQUEADO">BLOQUEADO</option>
+          <option value="DEPURADO">DEPURADO</option>
+        </select>
+        <button class="action" onclick="cargarEstadosDesdeTxt()">Actualizar Estados</button>
+        <div id="msgEstados" class="message success"></div>
+      </fieldset>
+    </div>
+  </div> 
 
   <!-- MÓDULO REPORTES -->
-  <div id="reportes" class="tab-content">
-    <div class="section">
-      <h3>Generar Reporte</h3>
-      <label for="fechaInicio">Fecha inicio:</label>
-      <input type="date" id="fechaInicio" />
-      <label for="fechaFin">Fecha fin:</label>
-      <input type="date" id="fechaFin" />
-      <button class="action" onclick="generarReporte()">Generar Reporte</button>
-      <div id="msgReporte" class="message success"></div>
-    </div>
+<div id="reportes" class="tab-content">
+  <div class="section">
+    <h3>Generar Reporte</h3>
+    <label for="fechaInicio">Fecha inicio:</label>
+    <input type="date" id="fechaInicio" />
+    <label for="fechaFin">Fecha fin:</label>
+    <input type="date" id="fechaFin" />
+
+    <label for="tipoReporte">Tipo de reporte:</label>
+    <label for="fuenteSelectReport">Fuente (opcional):</label>
+    <input type="text" id="fuenteSelectReport" placeholder="IBM / Cisco / (dejar vacío para todas)">
+
+    <select id="tipoReporte">
+      <option value="resumen">Resumen por fuente y herramienta</option>
+      <option value="detalle">Listado completo de IoCs</option>
+    </select>
+
+    <button class="action" onclick="generarReporte()">Generar Reporte</button>
+    
+    <div id="msgReporte" class="message"></div>
+
   </div>
+</div>
+
 
   <script src="{% static 'js/app.js' %}"></script>
   <script src="{% static 'js/scripts.js' %}"></script>
