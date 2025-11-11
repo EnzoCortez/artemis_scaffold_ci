@@ -576,78 +576,39 @@ async function refreshIocList() {
   }
 }
 
-/* ---------------------------
-   REPORTES (placeholder)
-----------------------------*/
 async function generarReporte() {
-  const from = document.getElementById('fechaInicio').value;
-  const to = document.getElementById('fechaFin').value;
+  const inicio = document.getElementById('fechaInicio').value;
+  const fin = document.getElementById('fechaFin').value;
+  const tipo = document.getElementById('tipoReporte').value || 'resumen';
+  const fuente = document.getElementById('fuenteSelectReport') ? document.getElementById('fuenteSelectReport').value.trim() : '';
+
   const msgEl = document.getElementById('msgReporte');
-  if (!from || !to) return showMessage(msgEl, 'Selecciona fecha inicio y fin', 'warn');
+  if (!inicio || !fin) {
+    return showMessage(msgEl, 'Selecciona fecha inicio y fin', 'warn');
+  }
 
-  showMessage(msgEl, 'Funcionalidad de reportes temporalmente deshabilitada en frontend.', 'warn');
-}
+  showMessage(msgEl, 'Generando reporte...', 'ok');
 
-/* ---------------------------
-   Init: refresh on load
-----------------------------*/
-document.addEventListener('DOMContentLoaded', () => {
-  try { refreshIocList(); } catch (e) {}
-});
-
-// después de recibir response data del POST /api/load-new/
-const batchId = data.batch_id;
-const inserted = data.inserted || [];
-const existing = data.existing || [];
-const errors = data.errors || [];
-
-// descargar ingestados del batch
-async function descargarIngestadosBatch(batchId) {
-  if (!batchId) return alert('No hay batch_id para descargar ingestados.');
-  const url = `/api/export/ingested/?batch=${encodeURIComponent(batchId)}`;
-  const res = await fetch(url, { credentials: 'include', headers: { 'X-CSRFToken': getCookie('csrftoken') } });
-  if (!res.ok) { alert('Error descargando ingestados: ' + res.status); return; }
-  const blob = await res.blob();
-  downloadBlob('iocs_ingestados_batch.txt', blob);
-}
-
-// descargar duplicados (lista existing) via POST
-async function descargarDuplicadosList(existingList) {
-  if (!existingList || !existingList.length) return alert('No hay duplicados para descargar.');
-  const res = await fetch('/api/export/duplicates/', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
-    body: JSON.stringify({ items: existingList })
-  });
-  if (!res.ok) { alert('Error descargando duplicados: ' + res.status); return; }
-  const blob = await res.blob();
-  downloadBlob('iocs_duplicados.txt', blob);
-}
-
-async function generarReporte() {
-  const fechaInicio = document.getElementById("fechaInicio").value;
-  const fechaFin = document.getElementById("fechaFin").value;
-  const tipo = document.getElementById("tipoReporte").value;
-
-  const url = `/api/reportes/?inicio=${fechaInicio}&fin=${fechaFin}&tipo=${tipo}`;
+  // construir query string
+  const params = new URLSearchParams({ inicio, fin, tipo });
+  if (fuente) params.set('fuente', fuente);
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error("Error al generar el reporte");
+    const res = await apiFetch(`/api/reportes/?${params.toString()}`, { method: 'GET' });
+    if (!res.ok) {
+      const txt = await res.text();
+      showMessage(msgEl, `Error al generar el reporte: ${res.status} ${txt}`, 'err');
+      return;
+    }
 
-    const blob = await response.blob();
-    const urlBlob = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = urlBlob;
-    a.download = `reporte_artemis_${tipo}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    document.getElementById("msgReporte").textContent = "✅ Reporte generado correctamente.";
+    // leer blob y descargar
+    const blob = await res.blob();
+    // nombre de archivo sugerido
+    const filename = `reporte_artemis_${tipo}_${inicio.replace(/-/g, '')}_${fin.replace(/-/g, '')}.txt`;
+    downloadBlob(filename, blob);
+    showMessage(msgEl, 'Reporte generado y descargado.', 'ok');
   } catch (err) {
-    console.error(err);
-    document.getElementById("msgReporte").textContent = "❌ Error al generar el reporte.";
+    console.error('Error generando reporte', err);
+    showMessage(msgEl, 'Error generando reporte: ' + (err.message || err), 'err');
   }
 }

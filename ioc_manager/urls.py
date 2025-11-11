@@ -1,4 +1,5 @@
 from django.urls import path
+from . import views
 from rest_framework.authtoken.views import obtain_auth_token
 from .views import IndexView, ValidateUploadView, LoadNewIocsView, IocListView, ExportIngestedTxtView, ExportNotIngestedTxtView, ChangeIocStateView, AuditCreateView, PurgeApiView, BulkChangeStateView, ExportDuplicatesTxtView, GenerarReporteView
 urlpatterns = [
@@ -15,6 +16,10 @@ urlpatterns = [
     path('api/export/ingested/', ExportIngestedTxtView.as_view(), name='export_ingested'),
     path('api/export/duplicates/', ExportDuplicatesTxtView.as_view(), name='export_duplicates'),
     path('api/export/not-ingested/', ExportNotIngestedTxtView.as_view(), name='export_not_ingested'),
-    path('api/reportes/', GenerarReporteView.as_view(), name='reportes'),
+    #path('api/reportes/', ReportGenerateView.as_view(), name='reportes'),
     path('api-token-auth/', obtain_auth_token, name='api_token_auth'),
+    path('api/reportes/', GenerarReporteView.as_view(), name='api_reportes'),
+
+    #path('api/reportes/resumen/', ReportResumenView.as_view(), name='report_resumen'),
+    #path('api/reportes/detalle/', ReportDetalleView.as_view(), name='report_detalle'),
 ]

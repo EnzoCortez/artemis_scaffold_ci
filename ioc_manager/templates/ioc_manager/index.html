@@ -99,6 +99,7 @@
   </div> 
 
   <!-- MÓDULO REPORTES -->
+<!-- MÓDULO REPORTES -->
 <div id="reportes" class="tab-content">
   <div class="section">
     <h3>Generar Reporte</h3>
@@ -107,19 +108,17 @@
     <label for="fechaFin">Fecha fin:</label>
     <input type="date" id="fechaFin" />
 
-    <label for="tipoReporte">Tipo de reporte:</label>
     <label for="fuenteSelectReport">Fuente (opcional):</label>
     <input type="text" id="fuenteSelectReport" placeholder="IBM / Cisco / (dejar vacío para todas)">
 
+    <label for="tipoReporte">Tipo de reporte:</label>
     <select id="tipoReporte">
       <option value="resumen">Resumen por fuente y herramienta</option>
       <option value="detalle">Listado completo de IoCs</option>
     </select>
 
     <button class="action" onclick="generarReporte()">Generar Reporte</button>
-    
     <div id="msgReporte" class="message"></div>
-
   </div>
 </div>
 

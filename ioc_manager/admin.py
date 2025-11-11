@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import IocType, Tool, ToolHashType, Firewall, FirewallIocType, IocEntry, IocTool, IocHistory
+from .models import IocType, Tool,ToolHashType, Firewall, FirewallIocType, IocEntry, IocTool, IocHistory
 admin.site.register(IocType)
 admin.site.register(Tool)
 admin.site.register(ToolHashType)

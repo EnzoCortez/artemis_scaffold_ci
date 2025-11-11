@@ -41,25 +41,25 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = 'artemis_project.wsgi.application'
 
+# settings.py (fragmento)
+# settings.py (fragmento)
 DATABASES = {
     'default': {
-        
         'ENGINE': os.environ.get('DB_ENGINE', 'django.db.backends.mysql'),
         'NAME': os.environ.get('DB_NAME', 'artemis_db'),
         'USER': os.environ.get('DB_USER', 'artemis_user'),
         'PASSWORD': os.environ.get('DB_PASS', 'artemis_password'),
-
         'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
         'PORT': os.environ.get('DB_PORT', '3306'),
-        # Conexion persistente (0 = no persistente)
         'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '0')),
         'OPTIONS': {
-            # Modo estricto y charset utf8mb4 recomendado para emojis/caracteres especiales
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
             'charset': 'utf8mb4',
         },
     }
 }
+
+
 
 STATIC_URL = '/static/'
 STATIC_ROOT= BASE_DIR /"staticfiles"
