@@ -61,3 +61,4 @@ def run():
     print(f"Total de IoC presentes en TODAS las herramientas ({total_herramientas}): {iocs_en_todas.count()}")
 
     print("\n✅ Verificación completada.")
+

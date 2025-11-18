@@ -1,90 +1,123 @@
 # ioc_manager/scripts/crear_relaciones_ioctool.py
-from django.db import IntegrityError, transaction
+"""
+Script idempotente para poblar ioc_manager_ioctool (IocTool)
+a partir de las reglas existentes (ToolIndicatorRule, ToolHashType, FirewallIocType).
+Uso (desde manage.py shell):
+    from ioc_manager.scripts.crear_relaciones_ioctool import generar_relaciones_ioctool
+    generar_relaciones_ioctool(dry_run=True, verbose=True)   # ensayo
+    generar_relaciones_ioctool(dry_run=False, verbose=True)  # aplicar
+"""
+
+from typing import Dict, Any, List, Tuple, Set
+from django.db import transaction
+from django.db.utils import IntegrityError
+
 from ioc_manager.models import (
-    IocEntry, IocTool, Tool, ToolHashType,
-    ToolIndicatorRule, FirewallIocType
+    IocEntry,
+    IocTool,
+    Tool,
+    ToolIndicatorRule,
+    ToolHashType,
+    FirewallIocType,
 )
 
-def generar_relaciones_ioctool(dry_run=False):
+def generar_relaciones_ioctool(dry_run: bool = True, verbose: bool = True, limit: int = None, batch_size: int = 1000) -> Dict[str, Any]:
     """
-    Genera relaciones IocTool usando las reglas disponibles:
-      - ToolIndicatorRule (herramienta <-> tipo IOC, can_ingest=True)
-      - ToolHashType (herramientas que soportan hashes para un tipo)
-      - FirewallIocType -> si existe, se asocia a la herramienta cuyo name contiene 'Firewall'
-    Parámetro:
-      - dry_run: si True no guarda cambios, solo muestra lo que haría.
+    - dry_run: si True no escribe, solo imprime acciones.
+    - verbose: si True imprime progreso.
+    - limit: limita número de IoCs procesados (útil en pruebas).
+    - batch_size: chunk size para iterator()
+    Retorna dict con resumen.
     """
     created = 0
     skipped = 0
+    errors: List[Tuple[int, str, str]] = []
 
-    # Preload tools para búsquedas por nombre (evita consultas repetidas)
-    tools_by_name = {t.name.strip().upper(): t for t in Tool.objects.all()}
+    qs = IocEntry.objects.select_related('ioc_type').order_by('id')
+    if limit:
+        qs = qs[:limit]
 
-    def find_firewall_tool():
-        # intentamos encontrar un Tool con nombre parecido a 'Firewall'
-        for key, t in tools_by_name.items():
-            if 'FIREWALL' in key:
-                return t
-        # fallback: buscar en DB
-        return Tool.objects.filter(name__icontains='firewall').first()
+    # iterar con iterator() para memoria
+    for ioc in qs.iterator(chunk_size=batch_size):
+        if verbose:
+            print(f"[INFO] Procesando IOC {ioc.id} - tipo: {getattr(ioc.ioc_type, 'name', None)}")
 
-    firewall_tool = find_firewall_tool()
+        tools_set: Set[Tool] = set()
 
-    iocs_qs = IocEntry.objects.select_related('ioc_type').all()
-
-    for ioc in iocs_qs:
-        tools_set = set()
-
-        # 1) Reglas explícitas tool <-> ioc_type
+        # 1) Reglas explícitas: ToolIndicatorRule (herramienta <-> ioc_type)
         try:
-            rules = ToolIndicatorRule.objects.filter(ioc_type=ioc.ioc_type, can_ingest=True).select_related('tool')
-            for r in rules:
-                if getattr(r, 'tool', None):
+            rules_qs = ToolIndicatorRule.objects.filter(ioc_type=ioc.ioc_type, can_ingest=True).select_related('tool')
+            for r in rules_qs:
+                if r.tool:
                     tools_set.add(r.tool)
-        except Exception:
-            # si el modelo no existe o hay problema, lo ignoramos (no fatal)
-            pass
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] fallo leyendo ToolIndicatorRule para IOC {ioc.id}: {e}")
 
-        # 2) ToolHashType (herramientas que aceptan este ioc_type para hashes)
+        # 2) Reglas de hash por herramienta (ToolHashType)
         try:
-            hash_types = ToolHashType.objects.filter(ioc_type=ioc.ioc_type).select_related('tool')
-            for h in hash_types:
-                if getattr(h, 'tool', None):
+            hash_qs = ToolHashType.objects.filter(ioc_type=ioc.ioc_type).select_related('tool')
+            for h in hash_qs:
+                if h.tool:
                     tools_set.add(h.tool)
-        except Exception:
-            pass
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] fallo leyendo ToolHashType para IOC {ioc.id}: {e}")
 
-        # 3) Firewall mapping: si existe un FirewallIocType para este tipo, asociar tool 'Firewall' si existe
+        # 3) Firewalls (si existe mapping en FirewallIocType)
         try:
-            if FirewallIocType.objects.filter(ioc_type=ioc.ioc_type).exists():
-                if firewall_tool:
-                    tools_set.add(firewall_tool)
-        except Exception:
-            pass
+            fw_map_qs = FirewallIocType.objects.filter(ioc_type=ioc.ioc_type).select_related('firewall')
+            if fw_map_qs.exists():
+                # normalmente la herramienta que representa "firewall" tiene 'firewall' o 'waf' en su name
+                fw_tools = list(Tool.objects.filter(name__icontains='firewall'))
+                if not fw_tools:
+                    fw_tools = list(Tool.objects.filter(name__icontains='waf'))
+                for t in fw_tools:
+                    tools_set.add(t)
+        except Exception as e:
+            if verbose:
+                print(f"[WARN] fallo leyendo FirewallIocType para IOC {ioc.id}: {e}")
 
+        # Si no hay herramientas detectadas — saltamos (se puede revisar después)
         if not tools_set:
             skipped += 1
+            if verbose:
+                print(f"[SKIP] IOC {ioc.id} ({ioc.value[:80]!r}) -> sin tools detectadas")
             continue
 
+        # Asociar cada tool con get_or_create (idempotente)
         for tool in tools_set:
-            try:
-                if dry_run:
-                    # sólo mostraría lo que haría
+            if dry_run:
+                if verbose:
                     print(f"[DRY RUN] Asociar IOC {ioc.id} -> {tool.name}")
-                    created += 1
-                else:
-                    with transaction.atomic():
-                        obj, was_created = IocTool.objects.get_or_create(ioc=ioc, tool=tool)
+                continue
+
+            try:
+                with transaction.atomic():
+                    obj, was_created = IocTool.objects.get_or_create(ioc=ioc, tool=tool)
                     if was_created:
                         created += 1
-            except IntegrityError:
-                # ya existe o violación de unicidad; safe ignore
-                pass
+                        if verbose:
+                            print(f"[CREATE] IOC {ioc.id} -> {tool.name}")
+                    else:
+                        if verbose:
+                            print(f"[EXISTS] IOC {ioc.id} -> {tool.name} (ya existía)")
+            except IntegrityError as ie:
+                errors.append((ioc.id, tool.name, str(ie)))
+                if verbose:
+                    print(f"[ERROR] IntegrityError creando IocTool {ioc.id} -> {tool.name}: {ie}")
             except Exception as e:
-                print(f"Error creando relación IOC {ioc.id} -> {getattr(tool,'name',tool)}: {e}")
+                errors.append((ioc.id, tool.name, str(e)))
+                if verbose:
+                    print(f"[ERROR] Error creando IocTool {ioc.id} -> {tool.name}: {e}")
 
-    # contar iocs sin tools asignadas (relación IocTool)
-    iocs_sin_tool = IocEntry.objects.filter(tools__isnull=True).count()
+    # Resumen
+    if verbose:
+        print(f"Relaciones creadas: {created}")
+        print(f"IOC sin tools asignadas: {skipped}")
+        if errors:
+            print("Errores (muestra hasta 20):")
+            for e in errors[:20]:
+                print(" ", e)
 
-    print(f"Relaciones creadas: {created}")
-    print(f"IOC sin tools asignadas: {iocs_sin_tool} (saltados: {skipped})")
+    return {"created": created, "skipped": skipped, "errors": errors}

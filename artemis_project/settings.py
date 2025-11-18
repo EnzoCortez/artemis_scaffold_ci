@@ -16,7 +16,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework.authtoken',
-    'ioc_manager',
+    'ioc_manager.apps.IocManagerConfig',
+    
 ]
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -41,8 +42,7 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = 'artemis_project.wsgi.application'
 
-# settings.py (fragmento)
-# settings.py (fragmento)
+# settings.py 
 DATABASES = {
     'default': {
         'ENGINE': os.environ.get('DB_ENGINE', 'django.db.backends.mysql'),
