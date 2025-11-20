@@ -1,13 +1,13 @@
 /* static/js/scripts.js
-   Artemis - Integración frontend <-> backend (versión completa)
-   - Guardar en static/js/scripts.js
-   - Requiere IDs en HTML: fileCarga, fuenteSelect, msgCarga, listaDuplicados, listaNuevos,
-     fileEstados, nuevoEstado, msgEstados, searchIoc, tablaManual (tbody), msgGestionManual,
-     fechaInicio, fechaFin, msgReporte, btn/deleteDepurados (si aplica).
+  Artemis - Integración frontend <-> backend (versión completa)
+  - Guardar en static/js/scripts.js
+  - Requiere IDs en HTML: fileCarga, fuenteSelect, msgCarga, listaDuplicados, listaNuevos,
+    -fileEstados, nuevoEstado, msgEstados, searchIoc, tablaManual (tbody), msgGestionManual,
+    fechaInicio, fechaFin, msgReporte, btn/deleteDepurados (si aplica).
 */
 
 /* ---------------------------
-   Helpers: CSRF + fetch wrapper
+  Helpers: CSRF + fetch wrapper
 ----------------------------*/
 function getCookie(name) {
   const cookie = document.cookie.split(';').find(row => row.trim().startsWith(name + '='));

@@ -521,123 +521,87 @@ class BulkChangeStateView(APIView):
             'errors': errors
         }, status=status.HTTP_200_OK)
         
-# views.py - GenerarReporteView (reemplazar la versión anterior)
-import datetime as _dt
-import logging
 
+
+# reemplaza o actualiza tu GenerarReporteView con esto (usa importaciones que ya tienes)
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.db.models import Count
-from rest_framework.views import APIView
-from rest_framework import permissions
-
-from .models import IocEntry, IocTool
-
-logger = logging.getLogger(__name__)
 
 class GenerarReporteView(APIView):
-    permission_classes = [permissions.IsAuthenticated]  # ajusta si hace falta
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         tipo = request.GET.get("tipo", "resumen")
         inicio = request.GET.get("inicio")
         fin = request.GET.get("fin")
-        fuente_filter = request.GET.get("fuente")  # opcional
+        fuente_filter = request.GET.get("fuente")
 
         if not inicio or not fin:
-            return JsonResponse({"error": "Debes proporcionar las fechas 'inicio' y 'fin' (YYYY-MM-DD)."}, status=400)
+            return JsonResponse({"error": "Debes proporcionar 'inicio' y 'fin' (YYYY-MM-DD)."}, status=400)
 
-        # parsear fechas (YYYY-MM-DD)
         try:
-            start_date = _dt.datetime.strptime(inicio, "%Y-%m-%d").date()
-            end_date = _dt.datetime.strptime(fin, "%Y-%m-%d").date()
-        except Exception as e:
+            start_date = datetime.strptime(inicio, "%Y-%m-%d").date()
+            end_date = datetime.strptime(fin, "%Y-%m-%d").date()
+        except Exception:
             return JsonResponse({"error": "Formato de fecha inválido. Usa YYYY-MM-DD."}, status=400)
 
-        try:
-            # construir datetimes aware según timezone del proyecto, luego convertir a UTC
-            tz_local = timezone.get_current_timezone()
-            start_naive = _dt.datetime.combine(start_date, _dt.time.min)
-            end_naive = _dt.datetime.combine(end_date, _dt.time.max)
+        tz = timezone.get_current_timezone()
+        start_dt = timezone.make_aware(datetime.combine(start_date, datetime.min.time()), tz)
+        end_dt = timezone.make_aware(datetime.combine(end_date, datetime.max.time()), tz)
 
-            start_aware = timezone.make_aware(start_naive, tz_local)
-            end_aware = timezone.make_aware(end_naive, tz_local)
+        qs = IocEntry.objects.filter(created_at__gte=start_dt, created_at__lte=end_dt)
+        if fuente_filter:
+            qs = qs.filter(source__iexact=fuente_filter)
 
-            start_utc = start_aware.astimezone(_dt.timezone.utc)
-            end_utc = end_aware.astimezone(_dt.timezone.utc)
+        total_period = qs.count()
 
-            # Query principal (usar created_at entre start_utc y end_utc)
-            qs = IocEntry.objects.filter(created_at__gte=start_utc, created_at__lte=end_utc)
+        if total_period == 0:
+            content = f"REPORTE Artemis\nDesde {start_date.isoformat()} Hasta {end_date.isoformat()}\n\nNo se encontraron indicadores en el rango especificado."
+            return HttpResponse(content, content_type='text/plain; charset=utf-8')
 
-            if fuente_filter:
-                qs = qs.filter(source__iexact=fuente_filter)
+        if tipo == "resumen":
+            content = self._generar_resumen(qs, start_date, end_date, total_period)
+        else:
+            content = self._generar_detalle(qs, start_date, end_date)
 
-            total = qs.count()
-            if total == 0:
-                content = f"REPORTE Artemis\nDesde {start_date.isoformat()} Hasta {end_date.isoformat()}\n\nNo se encontraron indicadores en el rango especificado."
-                return HttpResponse(content, content_type='text/plain; charset=utf-8')
+        filename = f"reporte_artemis_{tipo}_{start_date.isoformat()}_{end_date.isoformat()}.txt"
+        resp = HttpResponse(content, content_type='text/plain; charset=utf-8')
+        resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return resp
 
-            if tipo == "resumen":
-                content = self._generar_resumen(qs, start_date, end_date)
-            else:
-                content = self._generar_detalle(qs, start_date, end_date)
-
-            filename = f"reporte_artemis_{tipo}_{start_date.isoformat()}_{end_date.isoformat()}.txt"
-            resp = HttpResponse(content, content_type='text/plain; charset=utf-8')
-            resp['Content-Disposition'] = f'attachment; filename="{filename}"'
-            return resp
-
-        except Exception as e:
-            logger.exception("Error generando reporte")
-            return JsonResponse({"error": "Error interno al generar el reporte.", "detail": str(e)}, status=500)
-
-    def _generar_resumen(self, qs, start_date, end_date):
-        lines = [f"REPORTE Artemis", f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}", ""]
-
-        # Agrupar por source (coalesce NULL -> 'Sin fuente')
+    def _generar_resumen(self, qs, start_date, end_date, total_period):
+        lines = [f"REPORTE Artemis", f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}", f"Total periodo: {total_period} indicadores", ""]
         by_source = qs.values('source').annotate(total=Count('id')).order_by('-total')
 
         for src_row in by_source:
-            src_raw = src_row.get('source')
-            src = src_raw if src_raw else 'Sin fuente'
+            src = src_row.get('source') or 'Sin fuente'
             total = src_row.get('total', 0)
             lines.append(f"Fuente: {src}")
             lines.append(f"Total: {total} indicadores")
             lines.append("Herramientas")
 
-            # ids de iocs de esta fuente
-            if src == 'Sin fuente':
-                ioc_ids = list(qs.filter(source__isnull=True).values_list('id', flat=True))
-            else:
-                ioc_ids = list(qs.filter(source__iexact=src_raw).values_list('id', flat=True))
+            ioc_ids = list(qs.filter(source__iexact=src).values_list('id', flat=True)) if src != 'Sin fuente' else list(qs.filter(source__isnull=True).values_list('id', flat=True))
 
-            # contar por herramienta a través de IocTool
-            tool_counts = (
-                IocTool.objects
-                .filter(ioc_id__in=ioc_ids)
-                .values('tool__name')
-                .annotate(cnt=Count('ioc_id'))
-                .order_by('-cnt')
-            )
+            tool_counts = (IocTool.objects
+                            .filter(ioc_id__in=ioc_ids)
+                            .values('tool__name')
+                            .annotate(cnt=Count('ioc_id'))
+                            .order_by('-cnt'))
 
             if not tool_counts:
                 lines.append(f"  Sin herramienta: {total}")
             else:
-                with_tool_ids = set()
                 for t in tool_counts:
                     name = t.get('tool__name') or 'Sin herramienta'
                     cnt = t.get('cnt', 0)
                     lines.append(f"  {name}: {cnt}")
-                    # recolectar ids
-                    # NOTA: IocTool.values no incluye ioc ids aquí, así que se hace una consulta separada más abajo
-
-                # calcular iocs sin herramienta asociada
                 with_tool_ids = set(IocTool.objects.filter(ioc_id__in=ioc_ids).values_list('ioc_id', flat=True))
                 no_tool_count = len([i for i in ioc_ids if i not in with_tool_ids])
                 if no_tool_count:
                     lines.append(f"  Sin herramienta: {no_tool_count}")
 
-            lines.append("")  # separación
+            lines.append("")
 
         return "\n".join(lines)
 
@@ -646,16 +610,13 @@ class GenerarReporteView(APIView):
             f"REPORTE Artemis - Detallado",
             f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}",
             "",
-            f"{'Fuente':<20} {'Tipo':<15} {'Herramienta(s)':<30} {'Fecha creación':<20}",
-            "-" * 100
+            f"{'Fuente':<20} {'Tipo':<15} {'Herramienta(s)':<40} {'Fecha creación':<20}",
+            "-" * 120
         ]
-        # seleccionar relacion tools para evitar N+1
         for i in qs.select_related('ioc_type').order_by('created_at'):
             fuente = i.source or "Sin fuente"
             tipo = i.ioc_type.name if getattr(i, 'ioc_type', None) else "Desconocido"
-            # i.tools es related_name de IocTool (FK ioc -> IocTool) -> i.tools.all() devuelve IocTool set
-            herramientas_qs = i.tools.all().select_related('tool')
-            herramientas = ", ".join([t.tool.name for t in herramientas_qs if getattr(t, 'tool', None)]) or "Sin herramienta"
+            herramientas = ", ".join(list(i.tools.all().values_list('tool__name', flat=True))) or "Sin herramienta"
             fecha = i.created_at.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"{fuente:<20} {tipo:<15} {herramientas:<30} {fecha:<20}")
+            lines.append(f"{fuente:<20} {tipo:<15} {herramientas:<40} {fecha:<20}")
         return "\n".join(lines)

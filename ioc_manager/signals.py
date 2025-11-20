@@ -1,93 +1,44 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from django.utils import timezone
-
-from .models import (
-    IocEntry,
-    IocType,
-    Tool,
-    ToolIndicatorRule,
-    IocTool
-)
-
-
-def detectar_tipo_ioc(valor):
-    """ Detecta el tipo de IoC automáticamente. """
-    valor = valor.strip()
-
-    # HASH (SHA256 = 64 hex chars)
-    import re
-    if re.fullmatch(r"[A-Fa-f0-9]{64}", valor):
-        return "Hash"
-
-    # Dirección IP
-    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", valor):
-        return "IP"
-
-    # Correo
-    if "@" in valor and "." in valor:
-        return "Correo"
-
-    # URL (contiene / o http)
-    if valor.startswith("http://") or valor.startswith("https://") or "/" in valor:
-        return "URL"
-
-    # Dominio (texto + punto + tld)
-    if re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,10}", valor):
-        return "Dominio"
-
-    return None
-
+from .models import IocEntry
+from .scripts.crear_relaciones_ioctool import generar_relaciones_ioctool
 
 @receiver(post_save, sender=IocEntry)
-def crear_relaciones_automatically(sender, instance, created, **kwargs):
+def auto_associate_ioc_tools(sender, instance, created, **kwargs):
     """
-    Cada vez que se crea un IoC nuevo:
-    - Detecta tipo si no está asignado
-    - Busca reglas ToolIndicatorRule
-    - Crea filas en IocTool automáticamente
+    Al crear un nuevo IocEntry, ejecutar una asociación puntual usando
+    la lógica del script (dry_run=False pero solo para ese IOC).
     """
-
     if not created:
-        return  # solo correr en creación
-
-    ioc = instance
-
-    # 1. Determinar tipo de IoC si no tiene
-    if not ioc.ioc_type:
-        tipo_detectado = detectar_tipo_ioc(ioc.value)
-
-        if tipo_detectado:
-            try:
-                tipo = IocType.objects.get(name__iexact=tipo_detectado)
-                ioc.ioc_type = tipo
-                ioc.save(update_fields=["ioc_type"])
-            except IocType.DoesNotExist:
-                print(f"[WARN] Tipo detectado '{tipo_detectado}', pero no existe en DB.")
-        else:
-            print(f"[WARN] No se pudo detectar tipo de IoC: {ioc.value}")
-            return
-
-    # 2. Obtener herramientas que SI pueden procesar este tipo
-    reglas = ToolIndicatorRule.objects.filter(
-        ioc_type=ioc.ioc_type,
-        can_ingest=True
-    ).select_related("tool")
-
-    if not reglas.exists():
-        print(f"[INFO] No hay reglas para tipo {ioc.ioc_type.name}")
         return
+    # ejecutar solo para este IOC (limit=1 y dry_run False)
+    # la función original trabaja por batch; aquí podemos invocar una versión
+    # ligera: por simplicidad, llamar generar_relaciones_ioctool(limit=...) no funciona
+    # mejor: reusar la lógica mínimamente para una sola entrada:
+    from .models import ToolIndicatorRule, ToolHashType, FirewallIocType, IocTool, Tool
+    tools_set = set()
+    try:
+        for r in ToolIndicatorRule.objects.filter(ioc_type=instance.ioc_type, can_ingest=True).select_related('tool'):
+            tools_set.add(r.tool)
+    except:
+        pass
+    try:
+        for h in ToolHashType.objects.filter(ioc_type=instance.ioc_type).select_related('tool'):
+            tools_set.add(h.tool)
+    except:
+        pass
+    try:
+        if FirewallIocType.objects.filter(ioc_type=instance.ioc_type).exists():
+            fw_tools = list(Tool.objects.filter(name__icontains='firewall') | Tool.objects.filter(name__icontains='waf'))
+            for t in fw_tools:
+                tools_set.add(t)
+    except:
+        pass
 
-    # 3. Crear IocTool automáticamente
-    for regla in reglas:
+    for tool in tools_set:
         try:
-            IocTool.objects.get_or_create(
-                ioc=ioc,
-                tool=regla.tool,
-                defaults={"status": "pending", "created_at": timezone.now()}
-            )
+            IocTool.objects.get_or_create(ioc=instance, tool=tool)
         except Exception as e:
-            print(
-                f"[ERROR] No se pudo crear relación IocTool "
-                f"IoC={ioc.id} Tool={regla.tool.name}: {e}"
-            )
+            # loggear pero no fallar
+            import logging
+            logging.getLogger(__name__).error(f"No se pudo crear relación IocTool IoC={instance.id} Tool={getattr(tool,'name',tool)}: {e}")
