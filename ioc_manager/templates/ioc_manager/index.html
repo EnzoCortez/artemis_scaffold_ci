@@ -10,10 +10,14 @@
 </head>
 
 <body>
-  <header>
-    <h1>Artemis</h1>
-    <p>Inventario y Depuración de Indicadores de Compromiso (IoCs)</p>
-  </header>
+  <header class="main-header">
+  <img src="{% static 'img/artemis_logo.png' %}" alt="Artemis Logo" class="logo">
+  <div class="title-wrap">
+    <h1>ARTEMIS</h1>
+    <p>IOC Management System</p>
+  </div>
+</header>
+
 
   <nav>
     <button class="tab-button active" onclick="showTab('carga', this)">Carga IoC</button>
@@ -31,7 +35,7 @@
         <option value="">-- Seleccione la fuente --</option>
         <option value="IBM">IBM</option>
         <option value="Cisco">Cisco</option>
-        <option value="Proofpoint">Proofpoint</option>
+        <option value="Pichincha">Pichincha</option>
         <option value="Kaspersky">Kaspersky</option>
         <option value="Otro">Otro</option>
       </select>
@@ -64,76 +68,277 @@
     <div class="section">
       <h3>Gestión de Estados</h3>
 
-      <!-- BÚSQUEDA MANUAL -->
-      <fieldset>
-        <legend>Búsqueda manual</legend>
-        <input type="text" id="searchIoc" placeholder="Buscar IoC..." />
-        <button class="action" onclick="buscarManual()">Buscar</button>
-        <table id="tablaManual">
-          <thead>
-            <tr>
-              <th>IoC</th>
-              <th>Tipo de IoC</th>
-              <th>Estado</th>
-              <th>Acción</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </fieldset>
+      <!-- Controles superiores (búsqueda individual + búsqueda por TXT + borrar depurados) -->
+      <div class="controls-top">
+        <div class="flex-row" style="align-items:center;">
+          <input type="text" id="searchIoc" placeholder="Buscar IoC..." />
+          <button class="action" onclick="buscarManual()">Buscar</button>
+          <button class="action secondary" onclick="refreshIocList()">Refrescar (50 primeros)</button>
+        </div>
 
-      <!-- CARGA MASIVA DESDE TXT -->
-      <fieldset>
-        <legend>Carga masiva por archivo TXT</legend>
-        <p>Seleccione un archivo .txt con IoCs (uno por línea) para actualizar su estado.</p>
-        <input type="file" id="fileEstados" accept=".txt" />
-        <label for="nuevoEstado">Seleccione el nuevo estado:</label>
-        <select id="nuevoEstado">
-          <option value="BLOQUEADO">BLOQUEADO</option>
-          <option value="DEPURADO">DEPURADO</option>
-        </select>
-        <button class="action" onclick="cargarEstadosDesdeTxt()">Actualizar Estados</button>
-        <div id="msgEstados" class="message success"></div>
-      </fieldset>
-    </div>
-  </div> 
+        <div style="margin-left:auto;">
+          <label class="file-input">
+            <input type="file" id="fileBuscar" accept=".txt" />
+          </label>
+          <button class="action" onclick="buscarPorTxtGestion()">Buscar por TXT</button>
+          <button class="action danger" id="btnEliminarDepurados" onclick="confirmarEliminarDepurados()">Eliminar DEPURADOS</button>
+        </div>
+      </div>
 
-<!-- MÓDULO REPORTES -->
-<div id="reportes" class="tab-content">
-  <div class="section">
-    <h3>Generar Reporte</h3>
+      <div class="small-note">Modo normal: se muestran <strong>50</strong> primeros IoCs. Si busca por TXT se muestran <strong>todos</strong> los coincidentes.</div>
 
-    <div class="form-row">
-      <label for="fechaInicio">Fecha inicio:</label>
-      <input type="date" id="fechaInicio" />
-      <label for="fechaFin">Fecha fin:</label>
-      <input type="date" id="fechaFin" />
+      <table id="tablaManual">
+        <thead>
+          <tr>
+            <th>IoC</th>
+            <th>Tipo de IoC</th>
+            <th>Estado</th>
+            <th>Acción</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div id="msgGestionManual" class="message" style="display:none;"></div>
     </div>
 
-    <div class="form-row">
-      <label for="fuenteSelectReport">Fuente (opcional):</label>
-      <input type="text" id="fuenteSelectReport" placeholder="IBM / Cisco / (dejar vacío para todas)" />
-    </div>
+        <fieldset>
+      <legend>Carga masiva por archivo TXT</legend>
+      <p>Seleccione un archivo .txt con IoCs (uno por línea) para actualizar su estado.</p>
 
-    <div class="form-row">
-      <label for="tipoReporte">Tipo de reporte:</label>
-      <select id="tipoReporte">
-        <option value="resumen">Resumen por fuente y herramienta</option>
-        <option value="detalle">Listado completo de IoCs</option>
+      <input type="file" id="fileEstados" accept=".txt" />
+
+      <label for="nuevoEstado">Seleccione el nuevo estado:</label>
+      <select id="nuevoEstado">
+        <option value="BLOQUEADO">BLOQUEADO</option>
+        <option value="DEPURADO">DEPURADO</option>
       </select>
-    </div>
 
-    <div class="form-row">
-      <button class="action" onclick="generarReporte()">Generar Reporte</button>
-    </div>
+      <button class="action" onclick="cargarEstadosDesdeTxt()">Actualizar Estados</button>
 
-    <div id="msgReporte" class="message" style="display:none;"></div>
+
+      <div id="msgEstados" class="message success"></div>
+    </fieldset>
+
   </div>
-</div>
+
+  <!-- MÓDULO REPORTES -->
+  <div id="reportes" class="tab-content">
+    <div class="section">
+      <h3>Generar Reporte</h3>
+
+      <div class="form-row">
+        <label for="fechaInicio">Fecha inicio:</label>
+        <input type="date" id="fechaInicio" />
+        <label for="fechaFin">Fecha fin:</label>
+        <input type="date" id="fechaFin" />
+      </div>
+
+      <div class="form-row">
+        <label for="fuenteSelectReport">Fuente (opcional):</label>
+        <select id="fuenteSelectReport">
+            <option value="">Todas las fuentes</option>
+            <option value="IBM">IBM</option>
+            <option value="Cisco">Cisco</option>
+            <option value="Kaspersky">Kaspersky</option>
+            <option value="Pichincha">Pichincha</option>
+            <option value="Otro">Otro</option>
+        </select>
+      </div>
 
 
+      <div class="form-row">
+        <label for="tipoReporte">Tipo de reporte:</label>
+        <select id="tipoReporte">
+          <option value="resumen">Resumen por fuente y herramienta</option>
+          <option value="detalle">Listado completo de IoCs</option>
+        </select>
+      </div>
 
+      <div class="form-row">
+        <button class="action" onclick="generarReporte()">Generar Reporte</button>
+      </div>
+
+      <div id="msgReporte" class="message" style="display:none;"></div>
+      <pre id="reporteResultado" class="resultado-reporte" style="display:none;"></pre>
+    </div>
+  </div>
+
+  <!-- tus scripts externos -->
   <script src="{% static 'js/app.js' %}"></script>
   <script src="{% static 'js/scripts.js' %}"></script>
+
+  <!-- script inline: extiende/sobrescribe funciones para Gestión sin tocar scripts.js -->
+  <script>
+    (function(){
+      // límite por defecto
+      const DEFAULT_LIMIT = 50;
+
+      // Reemplazamos refreshIocList para aplicar límite 50 en vista normal
+      window.refreshIocList = async function() {
+        const tbody = document.querySelector('#tablaManual tbody');
+        const msgEl = document.getElementById('msgGestionManual');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        try {
+          const res = await apiFetch('/api/iocs/');
+          if (!res.ok) {
+            showMessage(msgEl || 'msgGestionManual', 'Error al obtener IoCs de la API', 'err');
+            return;
+          }
+          const data = await res.json();
+          const arr = Array.isArray(data) ? data : (data.results || []);
+          // aplicar límite
+          const limited = arr.slice(0, DEFAULT_LIMIT);
+          renderIocsIntoTable(limited);
+          showMessage(msgEl || 'msgGestionManual', `Mostrando ${limited.length} de ${arr.length} IoCs (por defecto solo 50). Para ver coincidencias completas, use 'Buscar por TXT'.`, 'ok');
+        } catch (err) {
+          console.error('refreshIocList error', err);
+          showMessage(msgEl || 'msgGestionManual', 'Error cargando lista: ' + (err.message||err), 'err');
+        }
+      };
+
+      // Reemplazamos buscarManual para mantener compatibilidad y mostrar máximo 50 también
+      window.buscarManual = async function() {
+        const q = document.getElementById('searchIoc').value.trim();
+        const tbody = document.querySelector('#tablaManual tbody');
+        const msgEl = document.getElementById('msgGestionManual') || null;
+        if (!tbody) return showMessage(msgEl || 'msgGestionManual', 'Tabla manual no encontrada', 'err');
+        tbody.innerHTML = '';
+
+        try {
+          const url = '/api/iocs/' + (q ? `?search=${encodeURIComponent(q)}` : '');
+          const res = await apiFetch(url);
+          if (!res.ok) {
+            const txt = await res.text();
+            return showMessage(msgEl || 'msgGestionManual', `Error buscando: ${res.status} ${txt}`, 'err');
+          }
+          const data = await res.json();
+          const arr = Array.isArray(data) ? data : (data.results || []);
+          const limited = arr.slice(0, DEFAULT_LIMIT);
+          renderIocsIntoTable(limited);
+          showMessage(msgEl || 'msgGestionManual', `Resultados: ${arr.length} (mostrando ${limited.length}). Para ver todos los que coincidan, usa 'Buscar por TXT'.`, 'ok');
+        } catch (err) {
+          showMessage(msgEl || 'msgGestionManual', 'Error conexión búsqueda: ' + (err.message || err), 'err');
+          console.error(err);
+        }
+      };
+
+      // Nueva función: leer archivo TXT y pedir al backend validación (validate-upload) para obtener coincidencias (duplicates)
+      window.buscarPorTxtGestion = async function() {
+        const fileInput = document.getElementById('fileBuscar');
+        const msgEl = document.getElementById('msgGestionManual');
+        const tbody = document.querySelector('#tablaManual tbody');
+        if (!fileInput || !fileInput.files.length) return showMessage(msgEl, 'Selecciona un archivo TXT para buscar.', 'warn');
+        tbody.innerHTML = '';
+        showMessage(msgEl, 'Analizando archivo y buscando coincidencias...', 'ok');
+
+        const fd = new FormData();
+        fd.append('file', fileInput.files[0]);
+
+        try {
+          const res = await apiFetch('/api/validate-upload/', { method: 'POST', body: fd });
+          if (!res.ok) {
+            const txt = await res.text();
+            return showMessage(msgEl, `Error validación: ${res.status} ${txt}`, 'err');
+          }
+          const data = await res.json();
+          // 'duplicates' es la lista que el backend devuelve como coincidencias
+          const duplicates = data.duplicates || data.duplicados || [];
+          // duplicates puede contener objetos con metadatos -> normalizar
+          const norm = duplicates.map(d => {
+            if (typeof d === 'string') return { value: d, detected_type: '' };
+            return {
+              value: d.value || d.ioc || d.item || '',
+              detected_type: (d.ioc_type || d.detected_type || d.type || ''),
+              tools: d.tools || d.tool || []
+            };
+          });
+          // Para cada duplicado, pedimos al backend la información completa (para mostrar estado y tipo reales)
+          // Hacemos llamadas en paralelo (pero limitadas) -> mejor construir un único request a /api/iocs/?search=...
+          // El backend permite buscar por valor exacto, pero vamos a pedir por cada valor (puede ser optimizado).
+          const tableRows = [];
+          for (const it of norm) {
+            // Intentar obtener objeto completo desde /api/iocs/?search=value (fallback si no existe endpoint bulk)
+            try {
+              const r = await apiFetch(`/api/iocs/?search=${encodeURIComponent(it.value)}`);
+              if (!r.ok) {
+                // si falla, añadimos una fila básica
+                tableRows.push({ value: it.value, tipo: it.detected_type || 'Desconocido', status:'N/A' });
+                continue;
+              }
+              const json = await r.json();
+              const arr = Array.isArray(json) ? json : (json.results || []);
+              if (arr.length) {
+                // si hay varios coincidencias, añadimos todos
+                arr.forEach(a => tableRows.push({ value: a.value || it.value, tipo: (a.ioc_type && a.ioc_type.name) || it.detected_type || detectarTipoIoc(it.value), status: a.status || 'N/A' }));
+              } else {
+                tableRows.push({ value: it.value, tipo: it.detected_type || 'Desconocido', status:'N/A' });
+              }
+            } catch (err) {
+              tableRows.push({ value: it.value, tipo: it.detected_type || 'Desconocido', status:'N/A' });
+            }
+          }
+
+          // renderear TODOS (sin límite)
+          renderIocsIntoTable(tableRows, { showAll: true });
+          showMessage(msgEl, `Busqueda por TXT completada. Se encontraron ${tableRows.length} coincidencias (mostradas todas).`, 'ok');
+        } catch (err) {
+          console.error(err);
+          showMessage(msgEl, 'Error al procesar archivo: ' + (err.message || err), 'err');
+        }
+      };
+
+      // Render helper: recibe array de objetos {value, tipo, status} o los objetos devueltos por API
+      function renderIocsIntoTable(arr, opts = {}) {
+        const tbody = document.querySelector('#tablaManual tbody');
+        tbody.innerHTML = '';
+        if (!Array.isArray(arr) || !arr.length) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td colspan="4">No se encontraron registros.</td>`;
+          tbody.appendChild(tr);
+          return;
+        }
+
+        // si los items vienen del endpoint /api/iocs/ contienen más campos
+        arr.forEach(item => {
+          const value = item.value || item.ioc || item.name || '';
+          const tipo = (item.ioc_type && (item.ioc_type.name || item.ioc_type)) || item.tipo || detectarTipoIoc(value);
+          const status = item.status || item.estado || item.state || item.status || 'N/A';
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${value}</td>
+            <td>${tipo}</td>
+            <td>${status}</td>
+            <td>
+              <button type="button" onclick="promptChangeState(${JSON.stringify(item.id || item.pk || value)})">Cambiar</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      // Confirmación antes de eliminar depurados (usa tu función eliminarDepurados en scripts.js)
+      window.confirmarEliminarDepurados = function() {
+        if (!confirm("¿Seguro que quieres eliminar TODOS los IoCs en estado 'DEPURADO'? Esto es irreversible.")) return;
+        // llamar a la función que ya existe en scripts.js
+        if (typeof eliminarDepurados === 'function') {
+          eliminarDepurados();
+        } else {
+          alert('Función eliminarDepurados no está disponible.');
+        }
+      };
+
+      // Inicializar: cargar primeros 50 al abrir la pestaña gestión
+      document.addEventListener('DOMContentLoaded', function(){
+        // si la pestaña gestión está visible por defecto, refrescamos
+        // llamamos refreshIocList (la hemos redefinido arriba)
+        refreshIocList();
+      });
+
+    })();
+  </script>
+
 </body>
 </html>

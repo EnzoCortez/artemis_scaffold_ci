@@ -42,30 +42,6 @@ from .models import IocEntry, IocType, IocTool, IocHistory  # ajusta si tus mode
 from .serializers import IocEntrySerializer
 
 # Intentamos importar la función de detección más robusta si existe en utils.py
-try:
-    from .utils import detect_ioc_type_py
-except Exception:
-    # Fallback simple si no tienes utils.py aún
-    def detect_ioc_type_py(v):
-        if not v:
-            return 'Desconocido'
-        vv = str(v).strip()
-        if '@' in vv:
-            return 'Correo'
-        # IPv4 simple heurística
-        if vv.count('.') == 3 and all(ch.isdigit() or ch == '.' for ch in vv):
-            return 'IP'
-        # hashes comunes por longitud hex
-        l = len(vv)
-        if all(c in "0123456789abcdefABCDEF" for c in vv) and l in (32, 40, 64, 128):
-            return 'Hash'
-        # URL
-        if vv.lower().startswith(('http://', 'https://')):
-            return 'URL'
-        # dominio heurístico
-        if '.' in vv and len(vv) > 3:
-            return 'Dominio'
-        return 'Desconocido'
 
 
 def is_invalid_value(s):
@@ -536,6 +512,7 @@ class GenerarReporteView(APIView):
         inicio = request.GET.get("inicio")
         fin = request.GET.get("fin")
         fuente_filter = request.GET.get("fuente")
+        
 
         if not inicio or not fin:
             return JsonResponse({"error": "Debes proporcionar 'inicio' y 'fin' (YYYY-MM-DD)."}, status=400)
@@ -571,31 +548,72 @@ class GenerarReporteView(APIView):
         return resp
 
     def _generar_resumen(self, qs, start_date, end_date, total_period):
-        lines = [f"REPORTE Artemis", f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}", f"Total periodo: {total_period} indicadores", ""]
+        lines = [
+            f"REPORTE Artemis",
+            f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}",
+            f"Total periodo: {total_period} indicadores",
+            ""
+        ]
+
         by_source = qs.values('source').annotate(total=Count('id')).order_by('-total')
 
         for src_row in by_source:
             src = src_row.get('source') or 'Sin fuente'
             total = src_row.get('total', 0)
+
             lines.append(f"Fuente: {src}")
             lines.append(f"Total: {total} indicadores")
             lines.append("Herramientas")
 
-            ioc_ids = list(qs.filter(source__iexact=src).values_list('id', flat=True)) if src != 'Sin fuente' else list(qs.filter(source__isnull=True).values_list('id', flat=True))
+            # IDs filtrados por fuente específica
+            if src == 'Sin fuente':
+                ioc_ids = list(qs.filter(source__isnull=True).values_list('id', flat=True))
+            else:
+                ioc_ids = list(qs.filter(source__iexact=src).values_list('id', flat=True))
 
-            tool_counts = (IocTool.objects
-                            .filter(ioc_id__in=ioc_ids)
-                            .values('tool__name')
-                            .annotate(cnt=Count('ioc_id'))
-                            .order_by('-cnt'))
+            # Conteo por herramienta
+            tool_counts = (
+                IocTool.objects.filter(ioc_id__in=ioc_ids)
+                .values('tool__name')
+                .annotate(cnt=Count('ioc_id'))
+                .order_by('-cnt')
+            )
+
+            # Conteo por herramienta + tipo de IOC
+            tool_type_counts = (
+                IocTool.objects.filter(ioc_id__in=ioc_ids)
+                .select_related('ioc__ioc_type', 'tool')
+                .values('tool__name', 'ioc__ioc_type__name')
+                .annotate(cnt=Count('ioc_id'))
+            )
+
+            # Estructura: { "EDR (Crowdstrike)": { "IP": 1200, "URL": 40 } }
+            tool_type_map = {}
+            for row in tool_type_counts:
+                tool_name = row['tool__name']
+                ioc_type = row['ioc__ioc_type__name']
+                cnt = row['cnt']
+
+                tool_type_map.setdefault(tool_name, {})
+                tool_type_map[tool_name][ioc_type] = cnt
 
             if not tool_counts:
                 lines.append(f"  Sin herramienta: {total}")
             else:
                 for t in tool_counts:
                     name = t.get('tool__name') or 'Sin herramienta'
-                    cnt = t.get('cnt', 0)
-                    lines.append(f"  {name}: {cnt}")
+                    cnt_total_tool = t.get('cnt', 0)
+
+                    # Línea principal
+                    lines.append(f"  {name}: {cnt_total_tool}")
+
+                    # Subtipos (IP, DOMAIN, HASH, EMAIL, etc.)
+                    if name in tool_type_map:
+                        subtips = tool_type_map[name]
+                        subtipo_line = "      " + ", ".join([f"{k}: {v}" for k, v in subtips.items()])
+                        lines.append(subtipo_line)
+
+                # IOC sin herramienta
                 with_tool_ids = set(IocTool.objects.filter(ioc_id__in=ioc_ids).values_list('ioc_id', flat=True))
                 no_tool_count = len([i for i in ioc_ids if i not in with_tool_ids])
                 if no_tool_count:
@@ -605,18 +623,32 @@ class GenerarReporteView(APIView):
 
         return "\n".join(lines)
 
+
     def _generar_detalle(self, qs, start_date, end_date):
         lines = [
             f"REPORTE Artemis - Detallado",
             f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}",
             "",
-            f"{'Fuente':<20} {'Tipo':<15} {'Herramienta(s)':<40} {'Fecha creación':<20}",
-            "-" * 120
+            f"{'Fuente':<20} {'Tipo':<15} {'Indicador':<35} {'Herramienta(s)':<40} {'Fecha creación':<20}",
+            "-" * 150
         ]
+
         for i in qs.select_related('ioc_type').order_by('created_at'):
             fuente = i.source or "Sin fuente"
             tipo = i.ioc_type.name if getattr(i, 'ioc_type', None) else "Desconocido"
-            herramientas = ", ".join(list(i.tools.all().values_list('tool__name', flat=True))) or "Sin herramienta"
+            indicador = i.value or "N/A"
+
+            herramientas = ", ".join(
+                i.tools.values_list('tool__name', flat=True)
+            ) or "Sin herramienta"
+
             fecha = i.created_at.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"{fuente:<20} {tipo:<15} {herramientas:<40} {fecha:<20}")
+
+            lines.append(
+                f"{fuente:<20} {tipo:<15} {indicador:<35} {herramientas:<40} {fecha:<20}"
+            )
+
         return "\n".join(lines)
+
+
+
