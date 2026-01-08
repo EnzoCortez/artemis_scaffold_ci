@@ -225,69 +225,76 @@
       };
 
       // Nueva función: leer archivo TXT y pedir al backend validación (validate-upload) para obtener coincidencias (duplicates)
-      window.buscarPorTxtGestion = async function() {
-        const fileInput = document.getElementById('fileBuscar');
-        const msgEl = document.getElementById('msgGestionManual');
-        const tbody = document.querySelector('#tablaManual tbody');
-        if (!fileInput || !fileInput.files.length) return showMessage(msgEl, 'Selecciona un archivo TXT para buscar.', 'warn');
-        tbody.innerHTML = '';
-        showMessage(msgEl, 'Analizando archivo y buscando coincidencias...', 'ok');
+      window.buscarPorTxtGestion = async function () {
+      const fileInput = document.getElementById('fileBuscar');
+      const msgEl = document.getElementById('msgGestionManual');
+      const tbody = document.querySelector('#tablaManual tbody');
 
-        const fd = new FormData();
-        fd.append('file', fileInput.files[0]);
+      if (!fileInput?.files?.length) {
+        return showMessage(msgEl, 'Selecciona un archivo TXT para buscar.', 'warn');
+      }
 
-        try {
-          const res = await apiFetch('/api/validate-upload/', { method: 'POST', body: fd });
-          if (!res.ok) {
-            const txt = await res.text();
-            return showMessage(msgEl, `Error validación: ${res.status} ${txt}`, 'err');
-          }
-          const data = await res.json();
-          // 'duplicates' es la lista que el backend devuelve como coincidencias
-          const duplicates = data.duplicates || data.duplicados || [];
-          // duplicates puede contener objetos con metadatos -> normalizar
-          const norm = duplicates.map(d => {
-            if (typeof d === 'string') return { value: d, detected_type: '' };
-            return {
-              value: d.value || d.ioc || d.item || '',
-              detected_type: (d.ioc_type || d.detected_type || d.type || ''),
-              tools: d.tools || d.tool || []
-            };
-          });
-          // Para cada duplicado, pedimos al backend la información completa (para mostrar estado y tipo reales)
-          // Hacemos llamadas en paralelo (pero limitadas) -> mejor construir un único request a /api/iocs/?search=...
-          // El backend permite buscar por valor exacto, pero vamos a pedir por cada valor (puede ser optimizado).
-          const tableRows = [];
-          for (const it of norm) {
-            // Intentar obtener objeto completo desde /api/iocs/?search=value (fallback si no existe endpoint bulk)
-            try {
-              const r = await apiFetch(`/api/iocs/?search=${encodeURIComponent(it.value)}`);
-              if (!r.ok) {
-                // si falla, añadimos una fila básica
-                tableRows.push({ value: it.value, tipo: it.detected_type || 'Desconocido', status:'N/A' });
-                continue;
-              }
-              const json = await r.json();
-              const arr = Array.isArray(json) ? json : (json.results || []);
-              if (arr.length) {
-                // si hay varios coincidencias, añadimos todos
-                arr.forEach(a => tableRows.push({ value: a.value || it.value, tipo: (a.ioc_type && a.ioc_type.name) || it.detected_type || detectarTipoIoc(it.value), status: a.status || 'N/A' }));
-              } else {
-                tableRows.push({ value: it.value, tipo: it.detected_type || 'Desconocido', status:'N/A' });
-              }
-            } catch (err) {
-              tableRows.push({ value: it.value, tipo: it.detected_type || 'Desconocido', status:'N/A' });
-            }
-          }
+      tbody.innerHTML = '';
+      showMessage(msgEl, 'Procesando archivo y buscando coincidencias...', 'ok');
 
-          // renderear TODOS (sin límite)
-          renderIocsIntoTable(tableRows, { showAll: true });
-          showMessage(msgEl, `Busqueda por TXT completada. Se encontraron ${tableRows.length} coincidencias (mostradas todas).`, 'ok');
-        } catch (err) {
-          console.error(err);
-          showMessage(msgEl, 'Error al procesar archivo: ' + (err.message || err), 'err');
+      try {
+        // 1️⃣ Leer archivo
+        const text = await fileInput.files[0].text();
+        const values = [...new Set(
+          text.split(/\r?\n/)
+            .map(v => v.trim())
+            .filter(v => v)
+        )];
+
+        if (!values.length) {
+          return showMessage(msgEl, 'El archivo no contiene IoCs válidos.', 'warn');
         }
-      };
+
+        // 2️⃣ Enviar TODO en una sola request
+        const res = await apiFetch('/api/iocs/bulk-search/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: values })
+        });
+
+        if (!res.ok) {
+          const txt = await res.text();
+          return showMessage(msgEl, `Error búsqueda masiva: ${txt}`, 'err');
+        }
+
+        const data = await res.json();
+        const found = data.results || [];
+
+        // 3️⃣ HashMap para lookup O(1)
+        const foundMap = new Map();
+        found.forEach(ioc => {
+          foundMap.set(ioc.value, ioc);
+        });
+
+        // 4️⃣ Construir filas finales
+        const rows = values.map(v => {
+          const ioc = foundMap.get(v);
+          return {
+            value: v,
+            tipo: ioc?.ioc_type || detectarTipoIoc(v),
+            status: ioc?.status || 'NO EXISTE'
+          };
+        });
+
+        // 5️⃣ Render final
+        renderIocsIntoTable(rows, { showAll: true });
+        showMessage(
+          msgEl,
+          `Búsqueda completada. ${found.length} coincidencias encontradas de ${values.length} IoCs.`,
+          'ok'
+        );
+
+      } catch (err) {
+        console.error(err);
+        showMessage(msgEl, 'Error procesando archivo: ' + err.message, 'err');
+      }
+    };
+
 
       // Render helper: recibe array de objetos {value, tipo, status} o los objetos devueltos por API
       function renderIocsIntoTable(arr, opts = {}) {

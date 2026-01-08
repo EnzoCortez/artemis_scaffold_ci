@@ -17,7 +17,6 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'ioc_manager.apps.IocManagerConfig',
-    
 ]
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

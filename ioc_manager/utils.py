@@ -11,10 +11,18 @@ from .models import IocEntry, IocType, Tool, Ingestion
 _RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 _RE_IPV4 = re.compile(r"^(25[0-5]|2[0-4]\d|1?\d{1,2})(\.(25[0-5]|2[0-4]\d|1?\d{1,2})){3}$")
 _RE_IPV6 = re.compile(r"^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}$")
-# dominio simple (sin path)
-_RE_DOMAIN = re.compile(r"^(?!:\/\/)([A-Za-z0-9\-]{1,63}\.)+[A-Za-z]{2,63}$")
+
+# Dominio válido (subdominios permitidos con guiones y números)
+DOMAIN_REGEX = re.compile(
+    r"^(?=.{1,253}$)(?:[a-zA-Z0-9-]{1,63}\.)+[A-Za-z]{2,63}$"
+)
+
+
 # URL robusta: acepta con o sin protocolo, subdominios, puerto opcional y rutas
-_RE_URL = re.compile(r"^(?:https?:\/\/)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:\:[0-9]{1,5})?(?:\/[^\s]*)?$")
+_RE_URL = re.compile(
+    r"\b((?:https?://)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?)\b"
+)
+
 # hex para hashes (longitudes 32/40/64/128)
 _RE_HEX = re.compile(r"^[A-Fa-f0-9]{32,128}$")
 
@@ -65,17 +73,17 @@ def detect_ioc_type(value: str) -> Optional[str]:
         # aún si no pasa regex completa, considerarlo URL por protocolo
         return "URL"
 
-    # URL implícita: tiene "/" y la parte izquierda es un dominio válido
+    # URL implícita: tiene "/" y la parte izquierda es dominio válido
     if "/" in v:
         left = v.split("/", 1)[0]
-        if _RE_DOMAIN.fullmatch(left) or re.fullmatch(r"[A-Za-z0-9\-.]+\.[A-Za-z]{2,}", left):
-            # validar con la regex completa también
+        if DOMAIN_REGEX.fullmatch(left):
             if _RE_URL.fullmatch(v):
                 return "URL"
             return "URL"
 
-    # Dominio simple
-    if _RE_DOMAIN.fullmatch(v) or re.fullmatch(r"[A-Za-z0-9\-.]+\.[A-Za-z]{2,}", v):
+
+        # Dominio simple
+    if DOMAIN_REGEX.fullmatch(v):
         return "Dominio"
 
     return None
@@ -88,32 +96,27 @@ def detect_ioc_type(value: str) -> Optional[str]:
 
 _VALID_TOOL_IOCTYPES = {
     "EDR (CROWDSTRIKE)": {
-        "types": {"IP", "Hash"},
+        "types": {"IP", "Hash","Dominio"},
         "hash_algos": {"md5", "sha256"},
     },
     "IPS": {
-        "types": {"IP", "Hash", "URL"},
+        "types": {"IP", "Hash"},
         "hash_algos": {"md5", "sha1", "sha256"},
     },
     "FIREWALL": {
-        "types": {"IP", "Dominio", "URL"},
-        "hash_algos": set()
+        "types": {"IP"},
     },
     "FTD": {
-        "types": {"IP", "Dominio"},
-        "hash_algos": set()
+        "types": {"IP"},
     },
     "MERAKI": {
-        "types": {"IP", "URL"},
-        "hash_algos": set()
+        "types": {"IP"},
     },
     "PROXY": {
         "types": {"IP", "Dominio", "URL"},
-        "hash_algos": set()
     },
     "PROOFPOINT": {
-        "types": {"Correo", "URL", "IP"},
-        "hash_algos": set()
+        "types": {"Correo", "Dominio", "IP"},
     }
 }
 
@@ -146,7 +149,7 @@ def validate_tool_accepts_ioc(tool_name: str, value: str) -> Tuple[bool, Optiona
     """
     Valida si una herramienta puede ingerir un IOC.
     Retorna: (True, None) si se puede
-             (False, "motivo") si NO se permite
+            (False, "motivo") si NO se permite
     """
     tipo = detect_ioc_type(value)
     if not tipo:
@@ -267,3 +270,34 @@ def generar_txt_ingestions(qs=None):
     contenido = "\n".join(lines)
     filename = f"ingestions_{timezone.now().strftime('%Y%m%d%H%M%S')}.txt"
     return filename, contenido
+
+def is_invalid_value(value) -> bool:
+    """
+    Determina si un valor de IoC es inválido / placeholder / ruido.
+    """
+    if value is None:
+        return True
+
+    try:
+        v = str(value).strip()
+    except Exception:
+        return True
+
+    if not v:
+        return True
+
+    INVALID_VALUES = {
+        "-", "--", "---", "—",
+        "N/A", "NA", "NULL", "NONE",
+        "[object Object]"
+    }
+
+    if v.upper() in INVALID_VALUES:
+        return True
+
+    # líneas solo con símbolos
+    if all(c in "-_=*#" for c in v):
+        return True
+
+    return False
+

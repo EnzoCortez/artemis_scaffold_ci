@@ -1,31 +1,38 @@
 # views.py - versión corregida y completa
 import io
+import uuid
+import logging
+
+
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
-from django.utils.encoding import smart_str
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Count
+from django.utils import timezone
+from django.utils.encoding import smart_str
+from django.utils.dateparse import parse_date
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
-from rest_framework.permissions import IsAdminUser
+from .utils import detect_ioc_type
 
-import uuid
-
-from datetime import datetime, date
-from django.db.models import Count
-from .models import IocEntry, IocTool
-from rest_framework.authentication import TokenAuthentication
-
-from .models import IocEntry, IocType, IocHistory
-import logging
-
-from django.utils.dateparse import parse_date
-from .models import IocEntry, IocTool, Tool, Firewall, FirewallIocType
-
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
-from datetime import timezone as dt_timezone
+from django.db.models import Count
+
+from datetime import datetime
+
+
+
+from .models import (
+    IocEntry,
+    IocType,
+    IocHistory,
+    IocTool,
+    Tool,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +47,6 @@ IOC_TYPE_ALIASES = {
 
 from .models import IocEntry, IocType, IocTool, IocHistory  # ajusta si tus modelos tienen otro nombre
 from .serializers import IocEntrySerializer
-
-# Intentamos importar la función de detección más robusta si existe en utils.py
 
 
 def is_invalid_value(s):
@@ -69,88 +74,107 @@ class ValidateUploadView(APIView):
         if not file_obj:
             return Response({'detail': 'No file provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # leer con tolerancia de encoding
+        # 1️⃣ Leer archivo de forma tolerante
         try:
             raw = file_obj.read()
             text = raw.decode('utf-8', errors='ignore')
         except Exception:
-            try:
-                file_obj.seek(0)
-                text = b''.join(chunk for chunk in file_obj.chunks()).decode('utf-8', errors='ignore')
-            except Exception as e:
-                return Response({'detail': f'Error leyendo archivo: {e}'}, status=status.HTTP_400_BAD_REQUEST)
+            file_obj.seek(0)
+            text = b''.join(chunk for chunk in file_obj.chunks()).decode('utf-8', errors='ignore')
 
-        lines = [l.rstrip('\r\n') for l in text.splitlines()]
-        duplicates = []
-        new_items = []
-        skipped = []
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+
         total = 0
+        skipped = []
+        clean_values = []
 
-        # preload ioc types for minor optimization
-        ioc_type_map = {it.name.lower(): it for it in IocType.objects.all()} if hasattr(IocType, 'objects') else {}
-
-        for raw_line in lines:
-            line = raw_line.strip()
-            if not line:
-                # ignorar líneas vacías
-                continue
+        # 2️⃣ Validación y limpieza
+        for line in lines:
             total += 1
             if is_invalid_value(line):
                 skipped.append({'line': line, 'reason': 'invalid/placeholder'})
-                continue
+            else:
+                clean_values.append(line)
 
-            # detect type heuristically
-            try:
-                detected = detect_ioc_type_py(line)
-            except Exception:
-                detected = None
+        # eliminar duplicados del archivo
+        clean_values = list(set(clean_values))
 
-            # Attempt to find existing IoC by value (value uniqueness assumed)
-            existing = IocEntry.objects.filter(value=line).select_related('ioc_type').first()
-            if existing:
-                # obtener herramientas asociadas a este IOC si existe modelo IocTool
-                tools = []
-                try:
-                    tool_qs = IocTool.objects.filter(ioc=existing).select_related('tool')
-                    tools = [t.tool.name for t in tool_qs if getattr(t, 'tool', None) and getattr(t.tool, 'name', None)]
-                except Exception:
-                    # si no existe IocTool o relación distinta,ignorar
-                    tools = []
+        # 3️⃣ Query única a BD
+        existing_qs = (
+            IocEntry.objects
+            .filter(value__in=clean_values)
+            .select_related('ioc_type')
+        )
 
+        # hash map por valor
+        existing_map = {ioc.value: ioc for ioc in existing_qs}
+
+        # 4️⃣ Cargar herramientas asociadas (si aplica)
+        tools_map = {}
+        try:
+            ioc_ids = [ioc.id for ioc in existing_qs]
+            tool_qs = (
+                IocTool.objects
+                .filter(ioc_id__in=ioc_ids)
+                .select_related('tool')
+            )
+            for it in tool_qs:
+                tools_map.setdefault(it.ioc_id, []).append(it.tool.name)
+        except Exception:
+            pass
+
+        duplicates = []
+        new_items = []
+
+        # 5️⃣ Clasificación final
+        for value in clean_values:
+            if value in existing_map:
+                ioc = existing_map[value]
                 duplicates.append({
-                    'value': smart_str(existing.value),
-                    'ioc_type': existing.ioc_type.name if getattr(existing, 'ioc_type', None) else (detected or ''),
-                    'tools': tools
+                    'value': ioc.value,
+                    'ioc_type': ioc.ioc_type.name if ioc.ioc_type else '',
+                    'tools': tools_map.get(ioc.id, [])
                 })
             else:
-                new_items.append({'value': smart_str(line), 'detected_type': detected or ''})
+                try:
+                    detected = detect_ioc_type(value)
+                except Exception:
+                    detected = ''
 
-        result = {
+                new_items.append({
+                    'value': value,
+                    'detected_type': detected
+                })
+
+        # 6️⃣ Respuesta optimizada
+        return Response({
             'duplicates': duplicates,
             'new': new_items,
             'skipped': skipped,
-            'summary': {'total_lines_processed': total, 'duplicates': len(duplicates), 'new': len(new_items), 'skipped': len(skipped)}
-        }
-        return Response(result, status=status.HTTP_200_OK)
+            'summary': {
+                'total_lines_processed': total,
+                'unique_valid': len(clean_values),
+                'duplicates': len(duplicates),
+                'new': len(new_items),
+                'skipped': len(skipped)
+            }
+        }, status=status.HTTP_200_OK)
 
 
 class LoadNewIocsView(APIView):
-    #authentication_classes = [TokenAuthentication]
     permission_classes = [permissions.IsAuthenticated]
+    CHUNK_SIZE = 500
 
     def post(self, request, format=None):
-        """
-        Recibe JSON: { items: [{value, type}? ...], fuente: 'IBM' }
-        - Crea un batch_id
-        - Marca los nuevos registros con upload_batch=batch_id y source=fuente
-        Respuesta: { inserted: [...], existing: [...], errors: [...], batch_id: '...' }
-        """
         data = request.data
-        items = data.get('items', [])
-        fuente = data.get('fuente') or data.get('source') or None
+        items = data.get("items", [])
+        fuente = data.get("fuente") or data.get("source") or "Desconocida"
 
-        if not isinstance(items, (list, tuple)):
-            return Response({'detail': 'items debe ser una lista'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(items, list):
+            return Response(
+                {"detail": "items debe ser una lista"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         batch_id = str(uuid.uuid4())
         user = request.user if request.user.is_authenticated else None
@@ -159,136 +183,260 @@ class LoadNewIocsView(APIView):
         existing = []
         errors = []
 
-        with transaction.atomic():
-            for item in items:
-                if isinstance(item, dict):
-                    value = item.get('value')
-                    type_name = item.get('type') or item.get('detected_type')
-                else:
-                    value = item
-                    type_name = None
+        # 1️⃣ Normalizar valores
+        values = []
+        for item in items:
+            if isinstance(item, dict):
+                v = item.get("value")
+            else:
+                v = item
 
-                if not value or str(value).strip() in ['', '—', '-', '--']:
-                    errors.append({'value': value, 'error': 'Valor inválido/placeholder'})
-                    continue
-                value = str(value).strip()
+            if not v or str(v).strip() in {"", "-", "--", "—"}:
+                continue
 
-                # resolver ioc_type si se puede
-                ioc_type_obj = None
-                if type_name:
-                    ioc_type_obj = IocType.objects.filter(name__iexact=type_name).first()
-                if not ioc_type_obj:
-                    # intentar deducción simple 
-                    #from .utils import detect_ioc_type_py
-                    detected = detect_ioc_type_py(value)
-                    if detected:
-                        ioc_type_obj = IocType.objects.filter(name__iexact=detected).first()
+            values.append(str(v).strip())
 
-                try:
-                    
-                    # Convertir a texto seguro
-                    value = str(value)
-                    if value.startswith("[object Object]"):
-                        errors.append({'value': value, 'error': 'Valor inválido: objeto en vez de texto'})
-                        continue
+        if not values:
+            return Response(
+                {"detail": "No se encontraron IoCs válidos"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-                    # Asegurar que source y batch se registren correctamente
-                    defaults = {
-                        'created_by': user,
-                        'source': fuente or 'Desconocida',
-                        'upload_batch': batch_id
-                    }
-                    if ioc_type_obj:
-                        obj, created = IocEntry.objects.get_or_create(
-                            ioc_type=ioc_type_obj,
-                            value=value,
-                            defaults={'created_by': user, 'source': fuente, 'upload_batch': batch_id}
-                        )
-                    else:
-                        # si por alguna razón no tenemos ioc_type, intentamos sin FK (si tu modelo lo permite)
-                        obj, created = IocEntry.objects.get_or_create(
-                            value=value,
-                            defaults={'created_by': user, 'source': fuente, 'upload_batch': batch_id}
-                        )
-                    if created:
-                        inserted.append(value)
-                        try:
-                            IocHistory.objects.create(ioc=obj, action='INGESTADO', user=request.user.username if request.user.is_authenticated else 'system')
-                        except Exception:
-                            pass
-                    else:
-                        existing.append(value)
-                except Exception as e:
-                    errors.append({'value': value, 'error': str(e)})
+        # 2️⃣ Buscar existentes (O(1))
+        existing_qs = (
+            IocEntry.objects
+            .filter(value__in=values)
+            .only("value")
+        )
+        existing_map = {i.value for i in existing_qs}
 
-        return Response({'inserted': inserted, 'existing': existing, 'errors': errors, 'batch_id': batch_id, 'source': fuente}, status=status.HTTP_200_OK)
+        # 3️⃣ Preparar nuevos
+        new_objects = []
+        for value in values:
+            if value in existing_map:
+                existing.append(value)
+                continue
+
+            detected_type = detect_ioc_type(value)
+            ioc_type = (
+                IocType.objects.filter(name__iexact=detected_type).first()
+                if detected_type else None
+            )
+
+            new_objects.append(
+                IocEntry(
+                    value=value,
+                    ioc_type=ioc_type,
+                    source=fuente,
+                    upload_batch=batch_id,
+                    created_by=user
+                )
+            )
+
+        # 4️⃣ Insertar en bulk
+        try:
+            with transaction.atomic():
+                for i in range(0, len(new_objects), self.CHUNK_SIZE):
+                    IocEntry.objects.bulk_create(
+                        new_objects[i:i + self.CHUNK_SIZE]
+                    )
+
+                inserted = [o.value for o in new_objects]
+
+                # 5️⃣ Crear historial (ya con PK)
+                created_iocs = IocEntry.objects.filter(upload_batch=batch_id)
+
+                histories = [
+                    IocHistory(
+                        ioc=ioc,
+                        action="INGESTADO",
+                        user=user.username if user else "system"
+                    )
+                    for ioc in created_iocs
+                ]
+
+                IocHistory.objects.bulk_create(histories)
+
+        except Exception as e:
+            return Response(
+                {"detail": "Error durante carga masiva", "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response(
+            {
+                "inserted": inserted,
+                "existing": existing,
+                "errors": errors,
+                "batch_id": batch_id,
+                "source": fuente
+            },
+            status=status.HTTP_200_OK
+        )
+        
+        
+        
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status, permissions
+from django.db.models import F
+
+from .models import IocEntry
 
 
-class IocListView(APIView):
+class IocBulkSearchView(APIView):
     """
-    GET /api/iocs/?search=...  -> devuelve lista de iocs (serializer)
+    POST /api/iocs/bulk-search/
+    Body:
+    {
+        "items": ["ioc1", "ioc2", ...]
+    }
+
+    Response:
+    {
+        "results": [
+            { "value": "...", "status": "...", "ioc_type": "..." }
+        ]
+    }
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request):
-        qs = IocEntry.objects.all().order_by('-created_at')
+    def post(self, request):
+        items = request.data.get("items", [])
 
-        # soporte búsqueda por valor, por tipo (ioc_type.name) o por herramienta (si existe relación)
-        q = request.query_params.get('search') or request.GET.get('search')
+        if not isinstance(items, list) or not items:
+            return Response(
+                {"detail": "items debe ser una lista no vacía"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 🔹 Normalizar y deduplicar (CRÍTICO)
+        values = list({
+            str(v).strip()
+            for v in items
+            if v and str(v).strip()
+        })
+
+        if not values:
+            return Response({"results": []}, status=status.HTTP_200_OK)
+
+        # 🔥 QUERY ÚNICA, EXACT MATCH
+        qs = (
+            IocEntry.objects
+            .filter(value__in=values)
+            .select_related("ioc_type")
+            .only("value", "status", "ioc_type__name")
+        )
+
+        # 🔹 Respuesta liviana (NO SERIALIZER)
+        results = [
+            {
+                "value": ioc.value,
+                "status": ioc.status,
+                "ioc_type": ioc.ioc_type.name if ioc.ioc_type else ""
+            }
+            for ioc in qs
+        ]
+
+        return Response({"results": results}, status=status.HTTP_200_OK)
+
+
+
+class IocListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    MAX_RESULTS = 50
+
+    def get(self, request):
+        q = request.query_params.get("search", "").strip()
+
+        qs = (
+            IocEntry.objects
+            .select_related("ioc_type")
+            .only(
+                "id",
+                "value",
+                "status",
+                "created_at",
+                "ioc_type__name"
+            )
+            .order_by("-created_at")
+        )
+
         if q:
-            try:
-                # intentamos filtrar por las tres fuentes (value, ioc_type, herramientas)
-                qs = qs.filter(
-                    Q(value__icontains=q) |
-                    Q(ioc_type__name__icontains=q) |
-                    Q(ioctool__tool__name__icontains=q)  # intenta join con IocTool -> Tool
-                ).distinct().order_by('-created_at')
-            except Exception:
-                # fallback simple: solo value / ioc_type
-                qs = qs.filter(
-                    Q(value__icontains=q) |
-                    Q(ioc_type__name__icontains=q)
-                ).distinct().order_by('-created_at')
+            qs = qs.filter(
+                Q(value__icontains=q) |
+                Q(ioc_type__name__icontains=q)
+            )
+
+        qs = qs[:self.MAX_RESULTS]
 
         serializer = IocEntrySerializer(qs, many=True)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 
 class ExportIngestedTxtView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request):
-        """
-        GET /api/export/ingested/?batch=<batch_id>
-        - Si batch dado: devuelve sólo los valores con upload_batch=batch_id
-        - Si no: devuelve todos los BLOQUEADO (comportamiento antiguo)
-        """
-        batch = request.GET.get('batch')
-        if batch:
-            qs = IocEntry.objects.filter(upload_batch=batch).order_by('ioc_type__name', 'value')
-        else:
-            qs = IocEntry.objects.filter(status__iexact='BLOQUEADO').order_by('ioc_type__name', 'value')
-        lines = [smart_str(i.value) for i in qs]
-        content = "\n".join(lines) + ("\n" if lines else "")
-        response = HttpResponse(content, content_type='text/plain; charset=utf-8')
-        response['Content-Disposition'] = 'attachment; filename="iocs_ingestados.txt"'
+    def _build_txt_response(self, queryset, filename):
+        def line_iterator():
+            for value in queryset.iterator(chunk_size=1000):
+                yield f"{smart_str(value)}\n"
+
+        response = HttpResponse(
+            line_iterator(),
+            content_type="text/plain; charset=utf-8"
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
 
+    def get(self, request):
+        batch = request.GET.get("batch")
+
+        qs = (
+            IocEntry.objects
+            .only("value")
+            .order_by("value")
+        )
+
+        if batch:
+            qs = qs.filter(upload_batch=batch)
+        else:
+            qs = qs.filter(status=IocEntry.STATUS_BLOCKED)
+
+        values = qs.values_list("value", flat=True)
+        return self._build_txt_response(values, "iocs_ingestados.txt")
 
     def post(self, request):
-        items = request.data.get('items', [])
-        if not isinstance(items, (list, tuple)):
-            return Response({'detail': 'items debe ser una lista'}, status=status.HTTP_400_BAD_REQUEST)
+        items = request.data.get("items", [])
 
-        items_clean = [str(i).strip() for i in items if not is_invalid_value(i)]
-        if not items_clean:
-            return Response({'detail': 'No hay items válidos para exportar'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(items, list):
+            return Response(
+                {"detail": "items debe ser una lista"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        existing = list(IocEntry.objects.filter(value__in=items_clean).values_list('value', flat=True))
-        content = "\n".join([smart_str(v) for v in existing]) + ("\n" if existing else "")
-        resp = HttpResponse(content, content_type='text/plain; charset=utf-8')
-        resp['Content-Disposition'] = 'attachment; filename="iocs_ingestados.txt"'
-        return resp
+        cleaned = {
+            str(v).strip()
+            for v in items
+            if v and str(v).strip() not in {"", "-", "--", "—"}
+        }
+
+        if not cleaned:
+            return Response(
+                {"detail": "No hay IoCs válidos"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        qs = (
+            IocEntry.objects
+            .filter(value__in=cleaned)
+            .only("value")
+            .order_by("value")
+            .values_list("value", flat=True)
+        )
+
+        return self._build_txt_response(qs, "iocs_ingestados.txt")
 
 
 class ExportDuplicatesTxtView(APIView):
@@ -339,7 +487,7 @@ class ExportNotIngestedTxtView(APIView):
         resp['Content-Disposition'] = 'attachment; filename="iocs_no_ingestados.txt"'
         return resp
 
-
+""" 
 class ChangeIocStateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -362,11 +510,9 @@ class ChangeIocStateView(APIView):
             pass
         return Response({'detail': 'Estado actualizado'}, status=status.HTTP_200_OK)
 
+"""
 
-# Audit and Purge API
-class AuditCreateSerializer:
-    # lightweight inline serializer replacement (we used drf_serializers earlier; keep simple)
-    pass
+
 
 
 # Re-use DRF serializer class for audit as in your code if available:
@@ -378,7 +524,7 @@ class AuditCreateSerializer(drf_serializers.Serializer):
 
 
 class AuditCreateView(APIView):
-    permission_classes = [IsAdminUser]
+    #permission_classes = [IsAdminUser]
 
     def post(self, request):
         serializer = AuditCreateSerializer(data=request.data)
@@ -395,7 +541,7 @@ class PurgeApiSerializer(drf_serializers.Serializer):
 
 
 class PurgeApiView(APIView):
-    permission_classes = [IsAdminUser]
+    #permission_classes = [IsAdminUser]
 
     def post(self, request):
         serializer = PurgeApiSerializer(data=request.data)
@@ -423,86 +569,139 @@ class PurgeApiView(APIView):
         return Response({'detail': f'Purgados {count} IoCs', 'purged_count': count}, status=status.HTTP_200_OK)
 
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status, permissions
+from django.db import transaction
+
+from .models import IocEntry, IocHistory
+from .utils import is_invalid_value
+
+
 class BulkChangeStateView(APIView):
-    """
-    Cambia estado de IoCs recibidos por archivo o JSON lines.
-    """
     permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request, format=None):
-        user = request.user.username if request.user.is_authenticated else 'system'
+    def post(self, request):
+        user = request.user.username if request.user.is_authenticated else "system"
 
-        # Obtener new_state
-        new_state = None
-        if 'new_state' in request.data:
-            new_state = request.data.get('new_state')
-        if new_state not in ('BLOQUEADO', 'DEPURADO'):
-            return Response({'detail': 'Estado inválido. Use "BLOQUEADO" o "DEPURADO".'}, status=status.HTTP_400_BAD_REQUEST)
+        new_state = request.data.get("new_state")
+        if new_state not in ("BLOQUEADO", "DEPURADO"):
+            return Response(
+                {"detail": 'Estado inválido. Use "BLOQUEADO" o "DEPURADO".'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Obtener líneas desde archivo o JSON
+        # -------------------------
+        # 🔹 Cargar IoCs
+        # -------------------------
         lines = []
-        if 'file' in request.FILES:
-            f = request.FILES['file']
+
+        if "file" in request.FILES:
+            f = request.FILES["file"]
             try:
-                txt = f.read().decode('utf-8', errors='ignore')
+                txt = f.read().decode("utf-8", errors="ignore")
             except Exception:
                 f.seek(0)
-                txt = b''.join(chunk for chunk in f.chunks()).decode('utf-8', errors='ignore')
+                txt = b"".join(chunk for chunk in f.chunks()).decode("utf-8", errors="ignore")
+
             lines = [l.strip() for l in txt.splitlines() if l.strip()]
         else:
-            data_lines = request.data.get('lines')
+            data_lines = request.data.get("lines")
             if isinstance(data_lines, list):
                 lines = [str(l).strip() for l in data_lines if str(l).strip()]
             else:
-                return Response({'detail': 'No se proporcionaron líneas o archivo.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "No se proporcionaron líneas o archivo."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
         if not lines:
-            return Response({'detail': 'Lista de IoCs vacía.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Lista de IoCs vacía."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        updated = []
-        not_found = []
+        # -------------------------
+        # 🔹 Normalizar y validar
+        # -------------------------
+        clean_values = []
         errors = []
 
+        for v in set(lines):
+            if is_invalid_value(v):
+                errors.append({"value": v, "error": "invalid/placeholder"})
+            else:
+                clean_values.append(v)
+
+        if not clean_values:
+            return Response(
+                {"updated_count": 0, "errors": errors},
+                status=status.HTTP_200_OK
+            )
+
+        # -------------------------
+        # 🔥 QUERY ÚNICA
+        # -------------------------
+        iocs = list(
+            IocEntry.objects
+            .filter(value__in=clean_values)
+            .only("id", "value", "status")
+        )
+
+        found_map = {ioc.value: ioc for ioc in iocs}
+        not_found = [v for v in clean_values if v not in found_map]
+
+        to_update_ids = []
+        history_objects = []
+        updated = []
+
+        for ioc in iocs:
+            if ioc.status == new_state:
+                updated.append({
+                    "value": ioc.value,
+                    "unchanged": True,
+                    "old": ioc.status
+                })
+                continue
+
+            old = ioc.status
+            to_update_ids.append(ioc.id)
+
+            history_objects.append(
+                IocHistory(
+                    ioc_id=ioc.id,
+                    action=f"STATE_CHANGE {old} -> {new_state}",
+                    user=user,
+                    comment=f"Bulk update via UI by {user}"
+                )
+            )
+
+            updated.append({
+                "value": ioc.value,
+                "old": old,
+                "new": new_state
+            })
+
+        # -------------------------
+        # 🚀 OPERACIONES MASIVAS
+        # -------------------------
         with transaction.atomic():
-            for val in lines:
-                if is_invalid_value(val):
-                    errors.append({'value': val, 'error': 'invalid/placeholder'})
-                    continue
-                try:
-                    try:
-                        ioc = IocEntry.objects.get(value=val)
-                    except IocEntry.DoesNotExist:
-                        not_found.append(val)
-                        continue
+            if to_update_ids:
+                IocEntry.objects.filter(id__in=to_update_ids).update(status=new_state)
 
-                    old = ioc.status
-                    if old == new_state:
-                        updated.append({'value': val, 'unchanged': True, 'old': old})
-                        continue
-
-                    ioc.status = new_state
-                    ioc.save(update_fields=['status'])
-                    try:
-                        IocHistory.objects.create(ioc=ioc, action=f'STATE_CHANGE {old} -> {new_state}', user=user, comment=f'Bulk update via UI by {user}')
-                    except Exception:
-                        pass
-                    updated.append({'value': val, 'old': old, 'new': new_state})
-                except Exception as e:
-                    errors.append({'value': val, 'error': str(e)})
+            if history_objects:
+                IocHistory.objects.bulk_create(history_objects, batch_size=1000)
 
         return Response({
-            'updated_count': len([u for u in updated if not u.get('unchanged')]),
-            'updated': updated,
-            'not_found': not_found,
-            'errors': errors
+            "updated_count": len(to_update_ids),
+            "updated": updated,
+            "not_found": not_found,
+            "errors": errors
         }, status=status.HTTP_200_OK)
-        
+    
 
+# reemplaza o actualiza tu GenerarReporteView con esto 
 
-# reemplaza o actualiza tu GenerarReporteView con esto (usa importaciones que ya tienes)
-from django.http import HttpResponse, JsonResponse
-from django.utils import timezone
-from django.db.models import Count
 
 class GenerarReporteView(APIView):
     permission_classes = [permissions.IsAuthenticated]
