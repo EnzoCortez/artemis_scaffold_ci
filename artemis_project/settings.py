@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'changeme')
-DEBUG = True
+DEBUG = False
 ALLOWED_HOSTS = [os.environ.get('ALLOWED_HOST', '127.0.0.1')]
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -62,6 +62,11 @@ DATABASES = {
 
 STATIC_URL = '/static/'
 STATIC_ROOT= BASE_DIR /"staticfiles"
+
+LOGIN_URL = '/login/'
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/login/'
+
 STATICFILES_DIRS = [BASE_DIR / "static"]
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'

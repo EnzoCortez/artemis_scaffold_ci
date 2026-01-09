@@ -1,3 +1,9 @@
+let estadoCarga = {
+  duplicados: [],
+  nuevos: [],
+  fuente: null
+};
+
 function showTab(id, btn) {
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
@@ -11,9 +17,8 @@ function validarCarga() {
     showMessage("msgCarga", "Debe seleccionar una fuente.", true);
     return;
   }
-
-  document.getElementById('listaDuplicados').innerHTML = duplicados.map(i=>`<li>${i}</li>`).join('');
-  document.getElementById('listaNuevos').innerHTML = nuevos.map(i=>`<li>${i}</li>`).join('');
+  document.getElementById('listaDuplicados').innerHTML = estadoCarga.duplicados.map(i=>`<li>${i}</li>`).join('');
+  document.getElementById('listaNuevos').innerHTML = estadoCarga.nuevos.map(i=>`<li>${i}</li>`).join('');
   showMessage('msgCarga', `Validación completada para la fuente: ${fuente}`);
 }
 
@@ -36,11 +41,14 @@ function generarReporte() {
   showMessage("msgReporte", `Reporte generado desde ${inicio} hasta ${fin}.`);
 }
 
-function showMessage(id,message,isWarning=false) {
-  const el = document.getElementById(id);
-  el.textContent = message;
-  el.className = "message " + (isWarning ? "warning" : "success");
-  el.style.display = 'block';
-  setTimeout(()=>el.style.display='none',3000);
+function showMessage(el, msg, type = 'info') {
+  if (!el) {
+    console.warn('showMessage: elemento no encontrado');
+    return;
+  }
+
+  el.textContent = msg;
+  el.className = `msg ${type}`;
 }
+
 

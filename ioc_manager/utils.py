@@ -301,3 +301,118 @@ def is_invalid_value(value) -> bool:
 
     return False
 
+
+from django.utils import timezone
+from django.db import transaction
+from collections import defaultdict
+
+from .models import (
+    Tool,
+    ToolIndicatorRule,
+    IocTool,
+    Ingestion,
+    IocHistory
+)
+from .utils import _VALID_TOOL_IOCTYPES
+
+
+def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
+    """
+    Asocia IOC ↔ Herramientas válidas en BULK
+    - Valida tipo IOC
+    - Respeta ToolIndicatorRule
+    - Evita duplicados
+    - Crea Ingestions + History
+    """
+
+    if not iocs:
+        return
+
+    now = timezone.now()
+
+    # 🔹 Preload herramientas
+    tools = {
+        t.name.upper(): t
+        for t in Tool.objects.all()
+    }
+
+    # 🔹 Preload reglas ToolIndicatorRule
+    allowed_rules = defaultdict(set)
+    for rule in ToolIndicatorRule.objects.filter(can_ingest=True):
+        allowed_rules[rule.tool_id].add(rule.ioc_type_id)
+
+    # 🔹 Preload relaciones existentes
+    existing_links = set(
+        IocTool.objects.filter(ioc__in=iocs)
+        .values_list('ioc_id', 'tool_id')
+    )
+
+    existing_ingestions = set(
+        Ingestion.objects.filter(ioc__in=iocs)
+        .values_list('ioc_id', 'tool_id')
+    )
+
+    ioc_tools_to_create = []
+    ingestions_to_create = []
+    history_to_create = []
+
+    for ioc in iocs:
+        ioc_type_name = ioc.ioc_type.name
+
+        for tool_name, config in _VALID_TOOL_IOCTYPES.items():
+            if ioc_type_name not in config.get("types", set()):
+                continue
+
+            tool = tools.get(tool_name.upper())
+            if not tool:
+                continue
+
+            # 🔒 Validación cruzada con ToolIndicatorRule
+            if ioc.ioc_type_id not in allowed_rules.get(tool.id, set()):
+                continue
+
+            key = (ioc.id, tool.id)
+
+            if key not in existing_links:
+                ioc_tools_to_create.append(
+                    IocTool(ioc=ioc, tool=tool)
+                )
+
+            if key not in existing_ingestions:
+                ingestions_to_create.append(
+                    Ingestion(
+                        ioc=ioc,
+                        tool=tool,
+                        status=Ingestion.STATUS_INGESTED,
+                        ingested_at=now
+                    )
+                )
+
+                history_to_create.append(
+                    IocHistory(
+                        ioc=ioc,
+                        action=f"Ingestado por {tool.name}",
+                        user=user.username if user else None
+                    )
+                )
+
+    # 🔥 BULK WRITE
+    with transaction.atomic():
+        if ioc_tools_to_create:
+            IocTool.objects.bulk_create(
+                ioc_tools_to_create,
+                ignore_conflicts=True,
+                batch_size=1000
+            )
+
+        if ingestions_to_create:
+            Ingestion.objects.bulk_create(
+                ingestions_to_create,
+                batch_size=1000
+            )
+
+        if history_to_create:
+            IocHistory.objects.bulk_create(
+                history_to_create,
+                batch_size=1000
+            )

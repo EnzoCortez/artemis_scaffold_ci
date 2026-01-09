@@ -4,7 +4,7 @@ import uuid
 import logging
 
 
-from django.http import HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse, request
 from django.shortcuts import render
 from django.db import transaction
 from django.db.models import Q, Count
@@ -15,13 +15,23 @@ from django.utils.dateparse import parse_date
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+
+from ioc_manager.services.ingestion_service import bulk_register_ingestion
+from .utils import associate_iocs_with_allowed_tools_bulk
 from .utils import detect_ioc_type
 
-from django.http import HttpResponse, JsonResponse
-from django.utils import timezone
-from django.db.models import Count
+from django.contrib.auth.decorators import login_required
+from django.utils.decorators import method_decorator
+from rest_framework.views import APIView
+from django.shortcuts import render
+
+
 
 from datetime import datetime
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+
 
 
 
@@ -58,17 +68,17 @@ def is_invalid_value(s):
         return True
     return False
 
-
+@method_decorator(login_required(login_url='/login/'), name='dispatch')
 class IndexView(APIView):
     permission_classes = [permissions.AllowAny]
-
+    
     def get(self, request):
         return render(request, 'ioc_manager/index.html')
 
 
 class ValidateUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-
+  
     def post(self, request, format=None):
         file_obj = request.FILES.get('file')
         if not file_obj:
@@ -163,119 +173,125 @@ class ValidateUploadView(APIView):
 
 class LoadNewIocsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    CHUNK_SIZE = 500
+    
 
     def post(self, request, format=None):
-        data = request.data
-        items = data.get("items", [])
-        fuente = data.get("fuente") or data.get("source") or "Desconocida"
+
+        items = request.data.get('items', [])
+        fuente = request.data.get('fuente') or request.data.get('source') or 'Desconocida'
 
         if not isinstance(items, list):
-            return Response(
-                {"detail": "items debe ser una lista"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'detail': 'items debe ser una lista'}, status=400)
 
         batch_id = str(uuid.uuid4())
-        user = request.user if request.user.is_authenticated else None
+        user = request.user
 
+        # 🔹 Preload tipos IOC
+        ioc_type_map = {
+            t.name.lower(): t
+            for t in IocType.objects.all()
+        }
+
+        values = []
+        value_set = set()
+
+        errors = []
         inserted = []
         existing = []
-        errors = []
 
-        # 1️⃣ Normalizar valores
-        values = []
+        # 🔹 Normalización previa (O(n))
         for item in items:
-            if isinstance(item, dict):
-                v = item.get("value")
-            else:
-                v = item
-
-            if not v or str(v).strip() in {"", "-", "--", "—"}:
+            value = item.get('value') if isinstance(item, dict) else str(item)
+            if not value:
                 continue
 
-            values.append(str(v).strip())
+            value = value.strip()
+            if is_invalid_value(value):
+                continue
 
-        if not values:
-            return Response(
-                {"detail": "No se encontraron IoCs válidos"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            value_set.add(value)
 
-        # 2️⃣ Buscar existentes (O(1))
-        existing_qs = (
-            IocEntry.objects
-            .filter(value__in=values)
-            .only("value")
-        )
-        existing_map = {i.value for i in existing_qs}
+        # 🔹 Buscar existentes en una sola query
+        existing_map = {
+            (e.ioc_type_id, e.value): e
+            for e in IocEntry.objects.filter(value__in=value_set)
+        }
 
-        # 3️⃣ Preparar nuevos
-        new_objects = []
-        for value in values:
-            if value in existing_map:
+        to_create = []
+        
+
+        for item in items:
+            value = item.get('value') if isinstance(item, dict) else str(item)
+            if not value:
+                continue
+
+            value = value.strip()
+            if is_invalid_value(value):
+                errors.append({'value': value, 'error': 'invalid'})
+                continue
+
+            detected = detect_ioc_type(value)
+            ioc_type = ioc_type_map.get((item.get('type') or detected or '').lower())
+
+            if not ioc_type:
+                errors.append({'value': value, 'error': 'Tipo IOC no detectado'})
+                continue
+
+            key = (ioc_type.id, value)
+
+            if key in existing_map:
                 existing.append(value)
                 continue
 
-            detected_type = detect_ioc_type(value)
-            ioc_type = (
-                IocType.objects.filter(name__iexact=detected_type).first()
-                if detected_type else None
-            )
-
-            new_objects.append(
+            to_create.append(
                 IocEntry(
-                    value=value,
                     ioc_type=ioc_type,
+                    value=value,
+                    created_by=user,
                     source=fuente,
-                    upload_batch=batch_id,
-                    created_by=user
+                    upload_batch=batch_id
                 )
             )
+            inserted.append(value)
 
-        # 4️⃣ Insertar en bulk
-        try:
-            with transaction.atomic():
-                for i in range(0, len(new_objects), self.CHUNK_SIZE):
-                    IocEntry.objects.bulk_create(
-                        new_objects[i:i + self.CHUNK_SIZE]
-                    )
+        # 🔹 Inserción masiva
+        IocEntry.objects.bulk_create(
+            to_create,
+            ignore_conflicts=True,
+            batch_size=1000
+        )
 
-                inserted = [o.value for o in new_objects]
-
-                # 5️⃣ Crear historial (ya con PK)
-                created_iocs = IocEntry.objects.filter(upload_batch=batch_id)
-
-                histories = [
-                    IocHistory(
-                        ioc=ioc,
-                        action="INGESTADO",
-                        user=user.username if user else "system"
-                    )
-                    for ioc in created_iocs
-                ]
-
-                IocHistory.objects.bulk_create(histories)
-
-        except Exception as e:
-            return Response(
-                {"detail": "Error durante carga masiva", "error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-        return Response(
-            {
-                "inserted": inserted,
-                "existing": existing,
-                "errors": errors,
-                "batch_id": batch_id,
-                "source": fuente
-            },
-            status=status.HTTP_200_OK
+        # 🔥 RECONSULTAR (ya con ID)
+        created_iocs = list(
+            IocEntry.objects.filter(upload_batch=batch_id)
+            .select_related('ioc_type')
         )
         
+        # 🔥🔥🔥 AQUÍ VA EL LLAMADO CORRECTO 🔥🔥🔥
+        associate_iocs_with_allowed_tools_bulk(
+            list(created_iocs),
+            user=request.user
+        )
+
+
+        associate_iocs_with_allowed_tools_bulk(
+        list(created_iocs),
+        user=request.user
+)
+
         
-        
+
+        return Response({
+            'inserted_count': len(created_iocs),
+            'existing_count': len(existing),
+            'errors': errors,
+            'batch_id': batch_id,
+            'source': fuente
+        }, status=200)
+
+
+
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
@@ -439,79 +455,94 @@ class ExportIngestedTxtView(APIView):
         return self._build_txt_response(qs, "iocs_ingestados.txt")
 
 
-class ExportDuplicatesTxtView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request):
-        """
-        POST /api/export/duplicates/  with JSON { items: [...] }
-        Devuelve en un TXT las entradas de 'items' que EXISTEN en la DB (es decir: coincidencias/duplicados).
-        Útil cuando frontend tiene la lista 'existing' y quiere descargar el TXT de duplicados.
-        """
-        items = request.data.get('items', [])
-        if not isinstance(items, (list, tuple)):
-            return Response({'detail': 'items debe ser una lista'}, status=status.HTTP_400_BAD_REQUEST)
-        items_clean = [str(i).strip() for i in items if str(i).strip()]
-        if not items_clean:
-            content = ""
-            resp = HttpResponse(content, content_type='text/plain; charset=utf-8')
-            resp['Content-Disposition'] = 'attachment; filename="iocs_duplicados.txt"'
-            return resp
-        existing = list(IocEntry.objects.filter(value__in=items_clean).values_list('value', flat=True))
-        content = "\n".join(existing) + ("\n" if existing else "")
-        resp = HttpResponse(content, content_type='text/plain; charset=utf-8')
-        resp['Content-Disposition'] = 'attachment; filename="iocs_duplicados.txt"'
-        return resp
+
+
+
 
 class ExportNotIngestedTxtView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        """
-        POST /api/export/not-ingested/  with JSON { items: [...] }
-        Devuelve los items que NO están en la DB (no-ingestados) — opción útil si quieres ese archivo.
-        """
         items = request.data.get('items', [])
-        if not isinstance(items, (list, tuple)):
-            return Response({'detail': 'items debe ser una lista'}, status=status.HTTP_400_BAD_REQUEST)
-        items_clean = [str(i).strip() for i in items if str(i).strip()]
-        if not items_clean:
-            content = ""
-            resp = HttpResponse(content, content_type='text/plain; charset=utf-8')
-            resp['Content-Disposition'] = 'attachment; filename="iocs_no_ingestados.txt"'
-            return resp
-        existing = set(IocEntry.objects.filter(value__in=items_clean).values_list('value', flat=True))
-        not_ingested = [i for i in items_clean if i not in existing]
-        content = "\n".join(not_ingested) + ("\n" if not_ingested else "")
-        resp = HttpResponse(content, content_type='text/plain; charset=utf-8')
-        resp['Content-Disposition'] = 'attachment; filename="iocs_no_ingestados.txt"'
-        return resp
+        if not isinstance(items, list):
+            return Response(
+                {'detail': 'items debe ser una lista'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-""" 
-class ChangeIocStateView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+        items_clean = {str(i).strip() for i in items if str(i).strip()}
+        if not items_clean:
+            return HttpResponse(
+                "",
+                content_type='application/zip',
+                headers={'Content-Disposition': 'attachment; filename="iocs_no_ingestados.zip"'}
+            )
+
+        # IOC existentes
+        existing = {
+            i.value: i
+            for i in IocEntry.objects
+                .filter(value__in=items_clean)
+                .select_related('ioc_type')
+                .prefetch_related('tools')
+        }
+
+        classified = {}
+
+        for val in items_clean:
+            ioc = existing.get(val)
+
+            # NO existe o existe pero no tiene herramientas
+            if not ioc or not ioc.tools.exists():
+                ioc_type = (
+                    ioc.ioc_type.name.upper()
+                    if ioc and ioc.ioc_type
+                    else detect_ioc_type(val) or 'DESCONOCIDO'
+                )
+                classified.setdefault(ioc_type, []).append(val)
+
+        # Generar ZIP
+        import zipfile
+        from io import BytesIO
+
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for ioc_type, values in classified.items():
+                zf.writestr(
+                    f"{ioc_type}.txt",
+                    "\n".join(values) + "\n"
+                )
+
+        buffer.seek(0)
+        return HttpResponse(
+            buffer.getvalue(),
+            content_type='application/zip',
+            headers={'Content-Disposition': 'attachment; filename="iocs_no_ingestados.zip"'}
+        )
+        
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from ioc_manager.services.ingestion_service import validate_and_ingest
+
+class ValidateAndIngestView(APIView):
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        ioc_id = request.data.get('ioc_id')
-        new_state = request.data.get('new_state')
-        user = request.user.username if request.user.is_authenticated else 'system'
-        if new_state not in ('BLOQUEADO', 'DEPURADO'):
-            return Response({'detail': 'Estado inválido'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            ioc = IocEntry.objects.get(id=ioc_id)
-        except IocEntry.DoesNotExist:
-            return Response({'detail': 'IoC no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-        old = ioc.status
-        ioc.status = new_state
-        ioc.save(update_fields=['status'])
-        try:
-            IocHistory.objects.create(ioc=ioc, action=f'STATE_CHANGE {old} -> {new_state}', user=user)
-        except Exception:
-            pass
-        return Response({'detail': 'Estado actualizado'}, status=status.HTTP_200_OK)
+        items = request.data.get('items', [])
+        fuente = request.data.get('fuente')
 
-"""
+        if not items or not fuente:
+            return Response({'detail': 'Datos incompletos'}, status=400)
 
+        batch = validate_and_ingest(items, fuente)
+
+        return Response({
+            'batch_id': batch.id,
+            'inserted': batch.inserted,
+            'duplicated': batch.duplicated
+        })
 
 
 
@@ -849,5 +880,120 @@ class GenerarReporteView(APIView):
 
         return "\n".join(lines)
 
+from django.http import HttpResponse
+from zipfile import ZipFile
+import io
+
+class ExportIngestedByBatchView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, batch_id):
+        iocs = (
+            IocEntry.objects
+            .filter(upload_batch=batch_id)
+            .select_related('ioc_type')
+        )
+
+        if not iocs.exists():
+            return Response(
+                {'detail': 'No hay IoCs para este lote'},
+                status=404
+            )
+
+        buffer = io.BytesIO()
+
+        with ZipFile(buffer, 'w') as zip_file:
+            grouped = {}
+
+            for ioc in iocs:
+                tipo = ioc.ioc_type.name
+                grouped.setdefault(tipo, []).append(ioc.value)
+
+            for tipo, values in grouped.items():
+                content = "\n".join(values) + "\n"
+                zip_file.writestr(f"{tipo}.txt", content)
+
+        buffer.seek(0)
+
+        response = HttpResponse(
+            buffer.read(),
+            content_type='application/zip'
+        )
+        response['Content-Disposition'] = (
+            'attachment; filename="iocs_ingestados.zip"'
+        )
+        response['Content-Length'] = buffer.tell()
+
+        return response
+
+from django.contrib.auth import authenticate, login, logout
+
+
+from django.contrib.auth import authenticate, login
+from django.shortcuts import render, redirect
+
+
+
+def login_view(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        password = request.POST.get('password')
+
+        print("USERNAME:", username)
+        print("PASSWORD:", password)
+
+        user = authenticate(request, username=username, password=password)
+        print("AUTH RESULT:", user)
+
+        if user is not None:
+            login(request, user)
+            print("LOGIN OK")
+            return redirect('/')
+        else:
+            print("LOGIN FAIL")
+            return render(request, 'registration/login.html', {
+                'error': 'Usuario o contraseña incorrectos'
+            })
+
+    return render(request, 'registration/login.html')
+
+
+class LogoutView(APIView):
+    def post(self, request):
+        logout(request)
+        return Response({'detail': 'Sesión cerrada'})
+
+
+
+def login_page(request):
+    return render(request, 'ioc_manager/login.html')
+
+from django.contrib.auth import login
+
+import json
+
+def api_login(request):
+    if request.method != 'POST':
+        return JsonResponse({'detail': 'Method not allowed'}, status=405)
+
+    data = json.loads(request.body)
+    user = authenticate(
+        request,
+        username=data.get('username'),
+        password=data.get('password')
+    )
+
+    if user is None:
+        return JsonResponse({'detail': 'Invalid credentials'}, status=401)
+
+    login(request, user)
+    return JsonResponse({'ok': True})
+
+from django.contrib.auth import logout
+from django.shortcuts import redirect
+
+def logout_view(request):
+    logout(request)
+    return redirect('/login/')
 
 

@@ -2,7 +2,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from .models import IocEntry, IocTool, Tool, IocType
 
-
+"""
 IOC_TOOLS_MATRIX = {
     "Hash": ["EDR (Crowdstrike)", "IPS"],
     "Dominio": ["PROXY","EDR (Crowdstrike)","PROOFPOINT" ],
@@ -40,3 +40,4 @@ def auto_associate_ioc_tools(sender, instance, created, **kwargs):
             logging.getLogger(__name__).error(
                 f"Error creando IocTool para IoC={instance.id} Tool={tool_name}: {e}"
             )
+"""

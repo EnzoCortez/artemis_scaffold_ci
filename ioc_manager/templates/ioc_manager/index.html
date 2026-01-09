@@ -10,13 +10,17 @@
 </head>
 
 <body>
-  <header class="main-header">
+<header class="main-header">
   <img src="{% static 'img/artemis_logo.png' %}" alt="Artemis Logo" class="logo">
+
   <div class="title-wrap">
     <h1>ARTEMIS</h1>
     <p>IOC Management System</p>
   </div>
+
+  <a href="{% url 'logout' %}" class="logout-btn">Cerrar sesión</a>
 </header>
+
 
 
   <nav>
@@ -24,6 +28,7 @@
     <button class="tab-button" onclick="showTab('depuracion', this)">Depuración</button>
     <button class="tab-button" onclick="showTab('gestion', this)">Gestión Estados</button>
     <button class="tab-button" onclick="showTab('reportes', this)">Reportes</button>
+    
   </nav>
 
   <!-- MÓDULO CARGA -->
@@ -58,8 +63,8 @@
   <div id="depuracion" class="tab-content">
     <div class="section">
       <h3>Depuración de Archivo</h3>
-      <button class="action" onclick="generarTxtIngestados()">Generar TXT - IoCs ingresados</button>
-      <button class="action" onclick="generarTxtNoIngresados()">Generar TXT - IoCs no ingresados</button>
+      <button class="action" onclick="generarTxtDuplicadosDesdeValidacion()">Generar TXT - IoCs Duplicados</button>
+      <button class="action" onclick="generarTxtNuevos()">Generar TXT - IoCs ingresados</button>
     </div>
   </div>
 
@@ -165,6 +170,7 @@
   </div>
 
   <!-- tus scripts externos -->
+  
   <script src="{% static 'js/app.js' %}"></script>
   <script src="{% static 'js/scripts.js' %}"></script>
 
@@ -197,6 +203,15 @@
           showMessage(msgEl || 'msgGestionManual', 'Error cargando lista: ' + (err.message||err), 'err');
         }
       };
+
+      
+      (async () => {
+        const res = await fetch('/api/iocs/');
+        if (res.status === 401) {
+          location.href = '/login/';
+        }
+      })();
+
 
       // Reemplazamos buscarManual para mantener compatibilidad y mostrar máximo 50 también
       window.buscarManual = async function() {

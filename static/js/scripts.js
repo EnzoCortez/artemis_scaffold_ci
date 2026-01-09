@@ -5,16 +5,37 @@
     -fileEstados, nuevoEstado, msgEstados, searchIoc, tablaManual (tbody), msgGestionManual,
     fechaInicio, fechaFin, msgReporte, btn/deleteDepurados (si aplica).
 */
+window.estadoCarga = {
+  duplicados: [],
+  nuevos: []
+};
+
+
+// 🔥 ESTADO GLOBAL DE LA CARGA
+window.iocsDuplicados = [];
+window.iocsNuevos = [];
+
 
 /* ---------------------------
   Helpers: CSRF + fetch wrapper
 ----------------------------*/
+function downloadBlob(blob, filename) {
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 function getCookie(name) {
   const cookie = document.cookie.split(';').find(row => row.trim().startsWith(name + '='));
   return cookie ? decodeURIComponent(cookie.split('=')[1]) : null;
 }
 
-async function apiFetch(url, opts = {}) {
+window.apiFetch = async function(url, opts = {}) {
   opts.credentials = opts.credentials || 'include';
   opts.headers = opts.headers || {};
 
@@ -129,7 +150,7 @@ function renderListIntoUL(ulEl, items, options = {}) {
     const li = document.createElement('li');
     li.textContent = value;                // mostrar solo el valor
     li.dataset.value = value;             // dato limpio para exportar
-    li.dataset.type = type;               // dato del tipo (útil si queremos mostrarlo)
+    li.dataset.type = type;               // dato del tipo 
     ulEl.appendChild(li);
   });
 }
@@ -148,6 +169,8 @@ function isPlaceholderValue(s) {
   return false;
 }
 
+
+
 /* ---------------------------
   MÓDULO: CARGA (validación y carga)
 ----------------------------*/
@@ -155,9 +178,17 @@ async function validarCarga() {
   const fileInput = document.getElementById('fileCarga');
   const fuenteEl = document.getElementById('fuenteSelect');
   const msgEl = document.getElementById('msgCarga');
+  // guardar estado global
 
-  if (!fileInput || !fileInput.files.length) return showMessage(msgEl, 'Selecciona un archivo TXT.', 'warn');
-  if (!fuenteEl || !fuenteEl.value) return showMessage(msgEl, 'Selecciona la fuente del lote.', 'warn');
+
+
+  if (!fileInput || !fileInput.files.length) {
+    return showMessage(msgEl, 'Selecciona un archivo TXT.', 'warn');
+  }
+
+  if (!fuenteEl || !fuenteEl.value) {
+    return showMessage(msgEl, 'Selecciona la fuente del lote.', 'warn');
+  }
 
   const fd = new FormData();
   fd.append('file', fileInput.files[0]);
@@ -166,54 +197,107 @@ async function validarCarga() {
   showMessage(msgEl, 'Validando archivo...', 'ok');
 
   try {
-    const res = await apiFetch('/api/validate-upload/', { method: 'POST', body: fd });
+    /* ===============================
+       1️⃣ VALIDACIÓN
+    =============================== */
+    const res = await apiFetch('/api/validate-upload/', {
+      method: 'POST',
+      body: fd
+    });
+
     if (!res.ok) {
       const txt = await res.text();
       return showMessage(msgEl, `Error validación: ${res.status} ${txt}`, 'err');
     }
+
     const data = await res.json();
 
-    // Normalizar la respuesta (acepta strings u objetos)
-    const duplicatesRaw = data.duplicates || data.duplicados || [];
-    const newRaw = data.new || data.nuevos || [];
-
+    const duplicatesRaw = data.duplicates || [];
+    const newRaw = data.new || [];
     const fuente = fuenteEl.value;
 
-    const duplicates = duplicatesRaw.map(d => {
-      if (typeof d === 'string') return { value: d, fuente: fuente };
-      if (typeof d === 'object' && d !== null) {
-        return {
-          value: d.value || d.ioc || d.item || '',
-          detected_type: d.ioc_type || d.detected_type || d.type || '',
-          tools: d.tools || d.tool || [],
-          fuente: d.fuente || fuente
-        };
+    const duplicates = duplicatesRaw.map(d => ({
+      value: d.value || d,
+      detected_type: d.ioc_type || d.detected_type || '',
+      tools: d.tools || [],
+      fuente
+    }));
+
+    const newItems = newRaw.map(n => ({
+      value: n.value || n,
+      detected_type: n.detected_type || ''
+    }));
+
+    window.estadoCarga.duplicados = duplicates.map(d => d.value);
+    window.estadoCarga.nuevos = newItems.map(n => n.value);
+
+    /* ===============================
+       2️⃣ INGESTA AUTOMÁTICA
+    =============================== */
+    if (newItems.length === 0) {
+      showMessage(msgEl, 'No hay IoCs nuevos para ingestar.', 'warn');
+    } else {
+      showMessage(msgEl, 'Ingestando IoCs nuevos...', 'ok');
+
+      const ingestRes = await apiFetch('/api/load-new/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: newItems,
+          fuente: fuente
+        })
+      });
+
+      if (!ingestRes.ok) {
+        const txt = await ingestRes.text();
+        return showMessage(msgEl, `Error ingesta: ${txt}`, 'err');
       }
-      return { value: String(d), fuente: fuente };
-    });
 
-    const newItems = newRaw.map(n => {
-      if (typeof n === 'string') return { value: n };
-      if (typeof n === 'object' && n !== null) {
-        return {
-          value: n.value || n.ioc || n.name || '',
-          detected_type: n.detected_type || n.type || ''
-        };
-      }
-      return { value: String(n) };
-    });
+      const ingestData = await ingestRes.json();
 
-    // Renderizar en ULs
-    renderListIntoUL(document.getElementById('listaDuplicados'), duplicates, { showType: true });
-    renderListIntoUL(document.getElementById('listaNuevos'), newItems, { showType: true });
+      // 🔑 batch_id PARA DEPURACIÓN
+      window.lastBatchId = ingestData.batch_id;
+    }
 
-    showMessage(msgEl, `Validación completada. Nuevos: ${newItems.length}, Duplicados: ${duplicates.length}`, 'ok');
+    /* ===============================
+       3️⃣ ESTADO GLOBAL (DEPURACIÓN)
+    =============================== */
+    window.iocsDuplicados = duplicates;
+    window.iocsNuevos = newItems;
+    window.iocFuente = fuente;
+
+    /* ===============================
+       4️⃣ UI
+    =============================== */
+    renderListIntoUL(
+      document.getElementById('listaDuplicados'),
+      duplicates,
+      { showType: true }
+    );
+
+    renderListIntoUL(
+      document.getElementById('listaNuevos'),
+      newItems,
+      { showType: true }
+    );
+
+    showMessage(
+      msgEl,
+      `Proceso completado. Ingestados: ${newItems.length}, Duplicados: ${duplicates.length}`,
+      'ok'
+    );
 
   } catch (err) {
-    showMessage(msgEl, 'Error de conexión al validar: ' + (err.message || err), 'err');
     console.error(err);
+    showMessage(
+      msgEl,
+      'Error de conexión: ' + (err.message || err),
+      'err'
+    );
   }
 }
+
+
 
 async function cargarNuevos() {
   const msgEl = document.getElementById('msgCarga');
@@ -257,45 +341,29 @@ async function cargarNuevos() {
     const existing = Array.isArray(data.existing) ? data.existing : (data.existing ? [data.existing] : []);
     const errors = Array.isArray(data.errors) ? data.errors : (data.errors ? [data.errors] : []);
     const batch = data.batch_id || null;
+    window.lastBatchId = batch;
 
     showMessage(msgEl, `Insertados: ${inserted.length}. Existían: ${existing.length}. Errores: ${errors.length}`, errors.length ? 'warn' : 'ok');
 
   
     // Descargar TXT de ingestados por batch (solo si batch existe y hay insertados)
-    if (batch && inserted.length) {
-      try {
-        const r1 = await apiFetch(`/api/export/ingested/?batch=${encodeURIComponent(batch)}`);
-        if (r1.ok) {
-          const blob = await r1.blob();
-          downloadBlob(`iocs_ingestados_${batch}.txt`, blob);
-        } else {
-          const txt = await r1.text();
-          console.warn('No se pudo descargar ingestados por batch:', r1.status, txt);
-        }
-      } catch (err) {
-        console.warn('Error descargando ingestados por batch', err);
+  if (batch && inserted.length) {
+    try {
+      const r1 = await apiFetch(`/api/export/ingested-by-batch/${encodeURIComponent(batch)}/`);
+      if (r1.ok) {
+        const blob = await r1.blob();
+        downloadBlob(`iocs_ingestados_${batch}.zip`, blob);
+      } else {
+        const txt = await r1.text();
+        console.warn('No se pudo descargar ingestados:', r1.status, txt);
       }
+    } catch (err) {
+      console.warn('Error descargando ingestados', err);
     }
+  }
 
     // Descargar TXT de duplicados (si existen)
-    if (existing.length) {
-      try {
-        const r2 = await apiFetch('/api/export/duplicates/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: existing })
-        });
-        if (r2.ok) {
-          const blob2 = await r2.blob();
-          downloadBlob(`iocs_duplicados_${batch || 'dup'}.txt`, blob2);
-        } else {
-          const txt = await r2.text();
-          console.warn('No se pudo descargar duplicados:', r2.status, txt);
-        }
-      } catch (err) {
-        console.warn('Error descargando duplicados', err);
-      }
-    }
+
 
     // Mostrar algunos errores si existen
     if (errors && errors.length) {
@@ -325,56 +393,58 @@ async function cargarNuevos() {
   - generarTxtIngestados(): POST con items = lista de duplicados mostrados en UI
   - generarTxtNoIngresados(): POST con items = lista de nuevos mostrados en UI
 ----------------------------*/
-async function generarTxtIngestados() {
-  // si quieres exportar SOLO los duplicados listados en pantalla
-  const lis = Array.from(document.querySelectorAll('#listaDuplicados li')).map(li => li.dataset.value).filter(Boolean);
-  if (!lis.length) {
-    // en caso de que quieras descargar *todos* los ingestados, usa GET:
-    if (!confirm('No hay duplicados listados. ¿Deseas descargar TODOS los IoCs ingestados?')) return;
-    // descargar todos con GET
-    try {
-      const res = await apiFetch('/api/export/ingested/');
-      if (!res.ok) { const txt = await res.text(); return alert('Error: ' + res.status + ' ' + txt); }
-      const blob = await res.blob();
-      downloadBlob('iocs_ingestados.txt', blob);
-      return;
-    } catch (err) {
-      return alert('Error de conexión: ' + err.message);
-    }
+function generarTxtDuplicadosDesdeValidacion() {
+  // Validar que existan duplicados en memoria
+  if (!window.iocsDuplicados || !window.iocsDuplicados.length) {
+    alert('No hay IoCs duplicados para exportar.');
+    return;
   }
 
-  // POST con items para exportar solo los listados
-  try {
-    const res = await apiFetch('/api/export/ingested/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: lis })
-    });
-    if (!res.ok) { const txt = await res.text(); return alert('Error: ' + res.status + ' ' + txt); }
-    const blob = await res.blob();
-    downloadBlob('iocs_ingestados.txt', blob);
-  } catch (err) {
-    alert('Error de conexión: ' + err.message);
+  // Construir contenido del TXT
+  const contenido = window.iocsDuplicados
+    .map(d => d.value)
+    .filter(Boolean)
+    .join('\n');
+
+  if (!contenido.trim()) {
+    alert('Los duplicados están vacíos.');
+    return;
   }
+
+  // Crear archivo TXT
+  const blob = new Blob([contenido], { type: 'text/plain;charset=utf-8' });
+
+  // Descargar
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `iocs_duplicados_${new Date().toISOString().slice(0,10)}.txt`;
+  document.body.appendChild(a);
+  a.click();
+
+  // Limpieza
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
-async function generarTxtNoIngresados() {
-  const lis = Array.from(document.querySelectorAll('#listaNuevos li')).map(li => li.dataset.value).filter(Boolean);
-  if (!lis.length) return alert('No hay IoCs nuevos listados para exportar.');
 
-  try {
-    const res = await apiFetch('/api/export/not-ingested/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: lis })
-    });
-    if (!res.ok) { const txt = await res.text(); return alert('Error: ' + res.status + ' ' + txt); }
-    const blob = await res.blob();
-    downloadBlob('iocs_no_ingestados.txt', blob);
-  } catch (err) {
-    alert('Error de conexión: ' + err.message);
+
+
+
+
+async function generarTxtNuevos() {
+  const items = window.estadoCarga?.nuevos || [];
+  if (!items.length) {
+    alert('No hay IoCs nuevos.');
+    return;
   }
+
+  const content = items.join('\n') + '\n';
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  downloadBlob('iocs_nuevos.txt', blob);
 }
+
+
 
 /* ---------------------------
   GESTIÓN - búsqueda individual y listado
@@ -612,3 +682,53 @@ async function generarReporte() {
     showMessage(msgEl, 'Error generando reporte: ' + (err.message || err), 'err');
   }
 }
+
+function downloadBlob(filename, data) {
+  if (!(data instanceof Blob)) {
+    console.error('downloadBlob recibió algo que no es Blob:', data);
+    alert('No se pudo generar el archivo TXT.');
+    return;
+  }
+
+  if (data.size === 0) {
+    alert('El archivo TXT está vacío.');
+    return;
+  }
+
+  const url = window.URL.createObjectURL(data);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}
+
+async function apiFetch(url, options = {}) {
+  const opts = {
+    credentials: 'include', // 🔒 sesiones Django
+    ...options
+  };
+
+  const res = await fetch(url, opts);
+
+  if (res.status === 401 || res.status === 403) {
+    console.warn('Sesión expirada o no autenticado');
+    window.location.href = '/login/';
+    throw new Error('No autenticado');
+  }
+
+  return res;
+}
+
+
+function getCookie(name) {
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop().split(';').shift();
+  return null;
+}
+
+
+

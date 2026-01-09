@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="es">
+{% load static %}
+<head>
+  <meta charset="UTF-8">
+  <title>Login | Artemis</title>
+  <link rel="stylesheet" href="{% static 'css/styles.css' %}">
+  <style>
+    body {
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      font-family: Arial, sans-serif;
+    }
+
+    .login-card {
+      background: #ffffff;
+      padding: 40px;
+      width: 350px;
+      border-radius: 12px;
+      box-shadow: 0 15px 40px rgba(0,0,0,.35);
+      text-align: center;
+    }
+
+    .login-card img {
+      width: 120px;
+      margin-bottom: 20px;
+    }
+
+    .login-card h2 {
+      margin-bottom: 20px;
+      color: #203a43;
+    }
+
+    .login-card input {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 15px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+
+    .login-card button {
+      width: 100%;
+      padding: 12px;
+      background: #203a43;
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .3s;
+    }
+
+    .login-card button:hover {
+      background: #2c5364;
+    }
+
+    .error {
+      color: #c0392b;
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <form method="post" class="login-card">
+    {% csrf_token %}
+
+    <img src="{% static 'img/artemis_logo.png' %}" alt="Artemis Logo">
+
+    <h2>ARTEMIS</h2>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <input type="text" name="username" placeholder="Usuario" required>
+    <input type="password" name="password" placeholder="Contraseña" required>
+
+    <button type="submit">Iniciar sesión</button>
+  </form>
+
+</body>
+</html>

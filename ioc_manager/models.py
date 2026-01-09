@@ -180,3 +180,30 @@ class IocHistory(models.Model):
 
     def __str__(self):
         return f"{self.ioc} - {self.action} @ {self.timestamp}"
+
+class IocLoadBatch(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True)
+    source = models.CharField(max_length=50)
+    total = models.IntegerField(default=0)
+    inserted = models.IntegerField(default=0)
+    duplicated = models.IntegerField(default=0)
+
+    def __str__(self):
+        return f"Lote {self.id} - {self.source}"
+
+
+class IocLoadResult(models.Model):
+    STATUS_CHOICES = (
+        ('INGESTADO', 'INGESTADO'),
+        ('DUPLICADO', 'DUPLICADO'),
+    )
+
+    batch = models.ForeignKey(IocLoadBatch, on_delete=models.CASCADE, related_name='results')
+    value = models.CharField(max_length=255)
+    ioc_type = models.CharField(max_length=30)
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES)
+
+    def __str__(self):
+        return f"{self.value} ({self.status})"
+ 
+
