@@ -1,0 +1,324 @@
+/* ======== GENERAL ======== */
+body {
+  margin: 0;
+  font-family: 'Segoe UI', sans-serif;
+  background: #1e2833;
+  color: #e9eef5;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+}
+
+/* ======== HEADER ======== */
+.main-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  background: #111a22;
+  padding: 20px 40px;
+  border-bottom: 2px solid #2c3c4a;
+}
+
+.main-header .logo {
+  height: 90px;
+}
+
+.title-wrap h1 {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.title-wrap p {
+  margin-top: 5px;
+  color: #7fa9d9;
+  font-size: 15px;
+}
+
+/* ======== NAVIGATION ======== */
+nav {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  background: #162028;
+  padding: 10px;
+  border-bottom: 2px solid #233342;
+}
+
+.tab-button {
+  padding: 10px 20px;
+  background: #22303b;
+  border: none;
+  border-radius: 6px;
+  color: #cfd8e3;
+  cursor: pointer;
+  font-weight: 600;
+  transition: 0.2s;
+}
+
+.tab-button:hover {
+  background: #2f4151;
+}
+
+.tab-button.active {
+  background: #4ea2ff;
+  color: white;
+}
+
+/* ======== MODULE WRAPPERS ======== */
+.tab-content {
+  display: none;
+  padding: 30px;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+.section {
+  background: #283643;
+  padding: 25px;
+  border-radius: 10px;
+  box-shadow: 0 0 12px rgba(0,0,0,0.25);
+  margin-bottom: 30px;
+}
+
+/* ======== FORMS ======== */
+input[type="text"],
+input[type="date"],
+input[type="file"],
+select {
+  width: 300px;
+  padding: 10px;
+  margin: 5px 0;
+  border-radius: 6px;
+  border: 1px solid #3a4c5a;
+  background: #1f2a33;
+  color: #e9eef5;
+}
+
+input::file-selector-button {
+  background: #395b78;
+  color: white;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+input::file-selector-button:hover {
+  background: #467193;
+}
+
+/* ======== BUTTONS ======== */
+button.action {
+  background: #4ea2ff;
+  color: white;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  margin-top: 10px;
+  transition: 0.2s;
+}
+
+button.action:hover {
+  background: #74b7ff;
+}
+
+button.secondary {
+  background: #364a5a;
+}
+
+button.secondary:hover {
+  background: #4b657a;
+}
+
+/* ======== TABLES ======== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 15px;
+  background: #1f2a33;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+table thead {
+  background: #24323f;
+}
+
+table th, table td {
+  padding: 12px;
+  border-bottom: 1px solid #2f3f50;
+}
+
+table tr:hover {
+  background: #2b3a47;
+}
+
+/* ======== MESSAGES ======== */
+.message {
+  padding: 12px;
+  border-radius: 6px;
+  margin-top: 10px;
+  display: none;
+}
+
+.message.success {
+  background: #2e6247;
+  color: #c9ffe4;
+}
+
+.message.error {
+  background: #742e2e;
+  color: #ffd2d2;
+}
+
+/* ======== REPORT VIEWER ======== */
+.resultado-reporte {
+  background: #0f171d;
+  padding: 20px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #2c3c4a;
+  margin-top: 20px;
+}
+
+/* ========================= */
+/* TABLAS MEJORADAS          */
+/* ========================= */
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+    font-size: 14px;
+}
+
+thead th {
+    background: #1c2733;
+    color: #ffffff;
+    padding: 10px;
+    text-align: left;
+    border-bottom: 2px solid #111;
+}
+
+tbody tr:nth-child(even) {
+    background: #22303c;
+}
+tbody tr:nth-child(odd) {
+    background: #18222d;
+}
+
+tbody td {
+    padding: 10px;
+    color: #ffffff;
+}
+
+tbody tr:hover {
+    background: #2e3e4f;
+}
+
+/* Botones dentro de la tabla */
+table button {
+    background-color: #3498db;
+    border: none;
+    padding: 6px 10px;
+    color: white;
+    cursor: pointer;
+    border-radius: 5px;
+}
+table button:hover {
+    background-color: #217dbb;
+}
+
+
+
+/* ========================= */
+/* Scroll mejorado para listas */
+/* ========================= */
+
+#listaDuplicados, #listaNuevos {
+    max-height: 300px;
+    overflow-y: auto;
+    background: #18222d;
+    border: 1px solid #2e3947;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+.message.success {
+    background-color: #27ae60;
+    color: #fff;
+    padding: 10px;
+    border-radius: 8px;
+    margin: 10px 0;
+}
+
+/* Pequeños estilos adicionales para Gestión */
+    .controls-top {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 10px;
+    }
+    .small-note { 
+        font-size: 0.9rem; 
+        color:#666; 
+        margin-top:6px; }
+
+    table#tablaManual { 
+        width:100%; 
+        border-collapse: collapse; 
+        margin-top:10px; }
+
+    table#tablaManual th, table#tablaManual td { 
+        border: 1px solid #ddd; padding:
+        6px 8px; text-align: 
+        left; font-family: monospace; font-size: 13px; }
+
+    table#tablaManual tbody tr:nth-child(odd) { 
+        background:#323232;
+    }
+
+    .action { padding:6px 10px; 
+        border-radius:6px; 
+        cursor:pointer; background:#0b79d0; 
+        color:#fff; border: none; }
+
+    .action.secondary { 
+        background:#6c757d; 
+    }
+    .action.danger { 
+        background:#c0392b; 
+    }
+
+    .flex-row { display:flex; 
+        gap:8px; 
+        align-items:center; 
+        flex-wrap:wrap; 
+    }
+
+    .file-input { 
+        display:inline-block; 
+    }
+
+    .logout-btn {
+  margin-left: auto;
+  background: #c0392b;
+  color: white;
+  padding: 10px 16px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: bold;
+  transition: background .3s;
+}
+
+.logout-btn:hover {
+  background: #e74c3c;
+}
