@@ -1,40 +1,27 @@
-# views.py - versión corregida y completa
+# views.py - Cleaned Refactored Version
 import io
+import os
 import uuid
 import logging
-
-
-from django.http import HttpResponse, JsonResponse, request
-from django.shortcuts import render
-from django.db import transaction
-from django.db.models import Q, Count
+import zipfile
+from datetime import datetime
 from django.utils import timezone
 from django.utils.encoding import smart_str
-from django.utils.dateparse import parse_date
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import render, redirect
+from django.db import transaction
+from django.db.models import Q, Count
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required
+from django.utils.decorators import method_decorator
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from rest_framework import serializers as drf_serializers
 
-from ioc_manager.services.ingestion_service import bulk_register_ingestion
-from .utils import associate_iocs_with_allowed_tools_bulk
-from .utils import detect_ioc_type
-
-from django.contrib.auth.decorators import login_required
-from django.utils.decorators import method_decorator
-from rest_framework.views import APIView
-from django.shortcuts import render
-
-
-
-from datetime import datetime
-
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-
-
-
-
+from ioc_manager.services.ingestion_service import validate_and_ingest
+from .utils import associate_iocs_with_allowed_tools_bulk, detect_ioc_type
 from .models import (
     IocEntry,
     IocType,
@@ -42,22 +29,11 @@ from .models import (
     IocTool,
     Tool,
 )
-
+from .serializers import IocEntrySerializer
 
 logger = logging.getLogger(__name__)
 
-# mapping tolerante de alias -> nombre canonical en ioc_type
-IOC_TYPE_ALIASES = {
-    'hash': 'Hash', 'md5': 'Hash', 'sha1': 'Hash', 'sha256': 'Hash', 'sha512': 'Hash',
-    'ip': 'IP', 'ipv4': 'IP', 'ipv6': 'IP',
-    'correo': 'Correo', 'email': 'Correo',
-    'dominio': 'Dominio', 'domain': 'Dominio',
-    'url': 'URL', 'http': 'URL', 'https': 'URL'
-}
-
-from .models import IocEntry, IocType, IocTool, IocHistory  # ajusta si tus modelos tienen otro nombre
-from .serializers import IocEntrySerializer
-
+# --- Utils ---
 
 def is_invalid_value(s):
     "Valores que consideramos inválidos / placeholders y que no deben guardarse."
@@ -67,6 +43,8 @@ def is_invalid_value(s):
     if s == '' or s == '—' or s == '-' or len(s) < 2:
         return True
     return False
+
+# --- Views ---
 
 @method_decorator(login_required(login_url='/login/'), name='dispatch')
 class IndexView(APIView):
@@ -173,7 +151,6 @@ class ValidateUploadView(APIView):
 
 class LoadNewIocsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    
 
     def post(self, request, format=None):
 
@@ -191,6 +168,11 @@ class LoadNewIocsView(APIView):
             t.name.lower(): t
             for t in IocType.objects.all()
         }
+        
+        # 🔹 Preload Tools names para validación
+        from .models import Tool
+        from .utils import validate_tool_accepts_ioc
+        all_tool_names = list(Tool.objects.values_list('name', flat=True))
 
         values = []
         value_set = set()
@@ -219,7 +201,6 @@ class LoadNewIocsView(APIView):
 
         to_create = []
         
-
         for item in items:
             value = item.get('value') if isinstance(item, dict) else str(item)
             if not value:
@@ -235,6 +216,18 @@ class LoadNewIocsView(APIView):
 
             if not ioc_type:
                 errors.append({'value': value, 'error': 'Tipo IOC no detectado'})
+                continue
+
+            # 🔒 VALIDACIÓN ESTRICTA: ¿Alguna herramienta soporta este IOC?
+            supported_by_any = False
+            for t_name in all_tool_names:
+                is_valid, _ = validate_tool_accepts_ioc(t_name, value)
+                if is_valid:
+                    supported_by_any = True
+                    break
+            
+            if not supported_by_any:
+                errors.append({'value': value, 'error': f'No soportado por ninguna herramienta ({ioc_type.name})'})
                 continue
 
             key = (ioc_type.id, value)
@@ -257,7 +250,6 @@ class LoadNewIocsView(APIView):
         # 🔹 Inserción masiva
         IocEntry.objects.bulk_create(
             to_create,
-            ignore_conflicts=True,
             batch_size=1000
         )
 
@@ -267,19 +259,11 @@ class LoadNewIocsView(APIView):
             .select_related('ioc_type')
         )
         
-        # 🔥🔥🔥 AQUÍ VA EL LLAMADO CORRECTO 🔥🔥🔥
+        # 🔥 Asignar herramientas
         associate_iocs_with_allowed_tools_bulk(
             list(created_iocs),
             user=request.user
         )
-
-
-        associate_iocs_with_allowed_tools_bulk(
-        list(created_iocs),
-        user=request.user
-)
-
-        
 
         return Response({
             'inserted_count': len(created_iocs),
@@ -288,16 +272,6 @@ class LoadNewIocsView(APIView):
             'batch_id': batch_id,
             'source': fuente
         }, status=200)
-
-
-
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status, permissions
-from django.db.models import F
-
-from .models import IocEntry
 
 
 class IocBulkSearchView(APIView):
@@ -357,7 +331,6 @@ class IocBulkSearchView(APIView):
         return Response({"results": results}, status=status.HTTP_200_OK)
 
 
-
 class IocListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     MAX_RESULTS = 50
@@ -378,17 +351,85 @@ class IocListView(APIView):
             .order_by("-created_at")
         )
 
+        type_filter = request.query_params.get("type", "").strip()
+        date_start = request.query_params.get("date_start")
+        date_end = request.query_params.get("date_end")
+
         if q:
             qs = qs.filter(
                 Q(value__icontains=q) |
                 Q(ioc_type__name__icontains=q)
             )
 
+        if type_filter:
+            qs = qs.filter(ioc_type__name__iexact=type_filter)
+
+        if date_start:
+            try:
+                dt_start = datetime.strptime(date_start, "%Y-%m-%d")
+                # Make aware if timezone support is active
+                current_tz = timezone.get_current_timezone()
+                dt_start = timezone.make_aware(datetime.combine(dt_start, datetime.min.time()), current_tz)
+                qs = qs.filter(created_at__gte=dt_start)
+            except ValueError:
+                pass
+
+        if date_end:
+            try:
+                dt_end = datetime.strptime(date_end, "%Y-%m-%d")
+                current_tz = timezone.get_current_timezone()
+                dt_end = timezone.make_aware(datetime.combine(dt_end, datetime.max.time()), current_tz)
+                qs = qs.filter(created_at__lte=dt_end)
+            except ValueError:
+                pass
+
         qs = qs[:self.MAX_RESULTS]
 
         serializer = IocEntrySerializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+
+class ExportClassifiedView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        items = request.data.get('items', [])
+        filename_prefix = request.data.get('filename_prefix', 'iocs').strip()
+        
+        # Sanitize filename (remove paths and extension)
+        filename_prefix = os.path.basename(filename_prefix).rsplit('.', 1)[0]
+        if not filename_prefix:
+            filename_prefix = 'iocs'
+
+        if not items or not isinstance(items, list):
+            return Response({'detail': 'No items provided'}, status=400)
+
+        # Classification logic
+        grouped = {}
+        for item in items:
+            val = item.get('value') if isinstance(item, dict) else str(item)
+            if not val:
+                continue
+            
+            # Use detected_type if provided, else detect
+            detected_type = item.get('detected_type') if isinstance(item, dict) else None
+            if not detected_type:
+                detected_type = detect_ioc_type(val) or 'Desconocido'
+            
+            grouped.setdefault(detected_type, []).append(val)
+
+        # Create ZIP
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as zf:
+            for ioc_type, values in grouped.items():
+                content = "\n".join(values)
+                fname = f"{filename_prefix}_{ioc_type}.txt"
+                zf.writestr(fname, content)
+
+        buffer.seek(0)
+        response = HttpResponse(buffer.read(), content_type='application/zip')
+        response['Content-Disposition'] = f'attachment; filename="{filename_prefix}_classified.zip"'
+        return response
 
 
 class ExportIngestedTxtView(APIView):
@@ -455,11 +496,6 @@ class ExportIngestedTxtView(APIView):
         return self._build_txt_response(qs, "iocs_ingestados.txt")
 
 
-
-
-
-
-
 class ExportNotIngestedTxtView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -503,10 +539,7 @@ class ExportNotIngestedTxtView(APIView):
                 classified.setdefault(ioc_type, []).append(val)
 
         # Generar ZIP
-        import zipfile
-        from io import BytesIO
-
-        buffer = BytesIO()
+        buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for ioc_type, values in classified.items():
                 zf.writestr(
@@ -520,14 +553,10 @@ class ExportNotIngestedTxtView(APIView):
             content_type='application/zip',
             headers={'Content-Disposition': 'attachment; filename="iocs_no_ingestados.zip"'}
         )
-        
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from ioc_manager.services.ingestion_service import validate_and_ingest
+
 
 class ValidateAndIngestView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         items = request.data.get('items', [])
@@ -545,9 +574,38 @@ class ValidateAndIngestView(APIView):
         })
 
 
+class ChangeIocStateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
 
-# Re-use DRF serializer class for audit as in your code if available:
-from rest_framework import serializers as drf_serializers
+    def post(self, request, pk=None):
+        if pk is None:
+            pk = request.data.get('ioc_id')
+
+        try:
+            ioc = IocEntry.objects.get(pk=pk)
+        except IocEntry.DoesNotExist:
+            return Response({'detail': 'IOC no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        new_state = request.data.get('new_state') or request.data.get('state')
+        if new_state not in ['BLOQUEADO', 'DEPURADO']:
+             return Response({'detail': 'Estado inválido'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        old_state = ioc.status
+        if old_state == new_state:
+             return Response({'detail': 'El estado ya es el solicitado', 'status': new_state})
+
+        ioc.status = new_state
+        ioc.save()
+
+        # Registrar historial
+        IocHistory.objects.create(
+            ioc=ioc, 
+            action=f"STATE_CHANGE {old_state} -> {new_state}", 
+            user=request.user.username, 
+            comment="Cambio de estado manual desde UI"
+        )
+        
+        return Response({'detail': 'Estado actualizado', 'status': new_state})
 
 
 class AuditCreateSerializer(drf_serializers.Serializer):
@@ -555,7 +613,7 @@ class AuditCreateSerializer(drf_serializers.Serializer):
 
 
 class AuditCreateView(APIView):
-    #permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = AuditCreateSerializer(data=request.data)
@@ -572,41 +630,76 @@ class PurgeApiSerializer(drf_serializers.Serializer):
 
 
 class PurgeApiView(APIView):
-    #permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request):
-        serializer = PurgeApiSerializer(data=request.data)
+    def post(self, request, pk=None):
+        # Support payload via body or URL pk (if logic requires pk to be audit_id?)
+        # User error: /api/purge/:1 -> 500. 
+        # CAUTION: 'pk' here probably refers to AUDIT ID based on context "purge/:1".
+        
+        data = request.data.copy()
+        if pk:
+            data['audit_id'] = pk
+            
+        serializer = PurgeApiSerializer(data=data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
         audit_id = serializer.validated_data['audit_id']
         dry_run = serializer.validated_data['dry_run']
+        
         try:
             audit = IocHistory.objects.get(id=audit_id)
         except IocHistory.DoesNotExist:
             return Response({'detail': 'Auditoría no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+            
         if 'AUDIT' not in (audit.action or '').upper():
             return Response({'detail': 'Registro de historial proporcionado no es una auditoría válida'}, status=status.HTTP_400_BAD_REQUEST)
+            
         qs = IocEntry.objects.filter(status__iexact='DEPURADO')
         count = qs.count()
         if dry_run:
             return Response({'dry_run': True, 'to_delete': count}, status=status.HTTP_200_OK)
+            
         # registrar historial por cada ioc por trazabilidad
-        for ioc in qs.iterator():
-            try:
-                IocHistory.objects.create(ioc=ioc, action=f'PURGED AFTER AUDIT {audit_id}', user=request.user.username, comment=f'Purgado vía UI tras auditoría {audit_id} por {request.user.username}')
-            except Exception:
-                pass
-        qs.delete()
-        return Response({'detail': f'Purgados {count} IoCs', 'purged_count': count}, status=status.HTTP_200_OK)
+        # REFACTOR: Evitar iterator() + write (ODBC Error)
+        # Procesar en lotes de IDs
+        
+        user_name = request.user.username
+        BATCH_SIZE = 1000
+        
+        # 1. Obtener todos los IDs a eliminar (List evaluation para cerrar cursor)
+        # Si son demasiados (millones), esto usa memoria, pero es seguro para DB.
+        # Alternativa: Paginación loop.
+        
+        ids_to_purge = list(qs.values_list('id', flat=True))
+        total_purged = 0
+        
+        for i in range(0, len(ids_to_purge), BATCH_SIZE):
+            chunk_ids = ids_to_purge[i:i + BATCH_SIZE]
+            
+            # Fetch objects for History relation (Django needs instances or IDs)
+            # Para IocHistory(ioc=ioc), necesitamos instancia o setear ioc_id
+            # IocHistory(ioc_id=id) es más eficiente que traer instancias completas
+            
+            history_buffer = [
+                IocHistory(
+                    ioc_id=ioc_id,
+                    action=f'PURGED AFTER AUDIT {audit_id}',
+                    user=user_name,
+                    comment=f'Purgado vía UI tras auditoría {audit_id}'
+                )
+                for ioc_id in chunk_ids
+            ]
+            
+            IocHistory.objects.bulk_create(history_buffer, batch_size=BATCH_SIZE)
+            
+            # DELETE batch
+            # Nota: Django .delete() en QS maneja cascades.
+            IocEntry.objects.filter(id__in=chunk_ids).delete()
+            total_purged += len(chunk_ids)
 
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status, permissions
-from django.db import transaction
-
-from .models import IocEntry, IocHistory
-from .utils import is_invalid_value
+        return Response({'detail': f'Purgados {total_purged} IoCs', 'purged_count': total_purged}, status=status.HTTP_200_OK)
 
 
 class BulkChangeStateView(APIView):
@@ -622,9 +715,6 @@ class BulkChangeStateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # -------------------------
-        # 🔹 Cargar IoCs
-        # -------------------------
         lines = []
 
         if "file" in request.FILES:
@@ -652,9 +742,6 @@ class BulkChangeStateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # -------------------------
-        # 🔹 Normalizar y validar
-        # -------------------------
         clean_values = []
         errors = []
 
@@ -670,9 +757,6 @@ class BulkChangeStateView(APIView):
                 status=status.HTTP_200_OK
             )
 
-        # -------------------------
-        # 🔥 QUERY ÚNICA
-        # -------------------------
         iocs = list(
             IocEntry.objects
             .filter(value__in=clean_values)
@@ -713,9 +797,6 @@ class BulkChangeStateView(APIView):
                 "new": new_state
             })
 
-        # -------------------------
-        # 🚀 OPERACIONES MASIVAS
-        # -------------------------
         with transaction.atomic():
             if to_update_ids:
                 IocEntry.objects.filter(id__in=to_update_ids).update(status=new_state)
@@ -729,9 +810,6 @@ class BulkChangeStateView(APIView):
             "not_found": not_found,
             "errors": errors
         }, status=status.HTTP_200_OK)
-    
-
-# reemplaza o actualiza tu GenerarReporteView con esto 
 
 
 class GenerarReporteView(APIView):
@@ -742,7 +820,6 @@ class GenerarReporteView(APIView):
         inicio = request.GET.get("inicio")
         fin = request.GET.get("fin")
         fuente_filter = request.GET.get("fuente")
-        
 
         if not inicio or not fin:
             return JsonResponse({"error": "Debes proporcionar 'inicio' y 'fin' (YYYY-MM-DD)."}, status=400)
@@ -759,7 +836,12 @@ class GenerarReporteView(APIView):
 
         qs = IocEntry.objects.filter(created_at__gte=start_dt, created_at__lte=end_dt)
         if fuente_filter:
-            qs = qs.filter(source__iexact=fuente_filter)
+            if fuente_filter.lower() == "otro":
+                # Excluir fuentes estándar
+                STANDARD_SOURCES = ["IBM", "Cisco", "Kaspersky", "Pichincha"]
+                qs = qs.exclude(source__in=STANDARD_SOURCES)
+            else:
+                qs = qs.filter(source__iexact=fuente_filter)
 
         total_period = qs.count()
 
@@ -778,10 +860,15 @@ class GenerarReporteView(APIView):
         return resp
 
     def _generar_resumen(self, qs, start_date, end_date, total_period):
+        sep_main = "=" * 50
+        sep_sub = "-" * 50
+        
         lines = [
-            f"REPORTE Artemis",
-            f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}",
-            f"Total periodo: {total_period} indicadores",
+            sep_main,
+            f" REPORTE Artemis",
+            f" Desde {start_date.isoformat()} Hasta {end_date.isoformat()}",
+            f" Total periodo: {total_period} indicadores",
+            sep_main,
             ""
         ]
 
@@ -791,13 +878,15 @@ class GenerarReporteView(APIView):
             src = src_row.get('source') or 'Sin fuente'
             total = src_row.get('total', 0)
 
-            lines.append(f"Fuente: {src}")
-            lines.append(f"Total: {total} indicadores")
-            lines.append("Herramientas")
+            lines.append(sep_sub)
+            lines.append(f" Fuente: {src}")
+            lines.append(f" Total: {total} indicadores")
+            lines.append(sep_sub)
+            lines.append(" Herramientas y Clasificación:")
 
             # IDs filtrados por fuente específica
             if src == 'Sin fuente':
-                ioc_ids = list(qs.filter(source__isnull=True).values_list('id', flat=True))
+                ioc_ids = list(qs.filter(Q(source__isnull=True) | Q(source='')).values_list('id', flat=True))
             else:
                 ioc_ids = list(qs.filter(source__iexact=src).values_list('id', flat=True))
 
@@ -859,30 +948,31 @@ class GenerarReporteView(APIView):
             f"REPORTE Artemis - Detallado",
             f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}",
             "",
-            f"{'Fuente':<20} {'Tipo':<15} {'Indicador':<35} {'Herramienta(s)':<40} {'Fecha creación':<20}",
-            "-" * 150
+            f"{'Fuente':<25} {'Tipo':<15} {'Indicador':<45} {'Herramienta(s)':<40} {'Fecha creación':<20}",
+            "-" * 145
         ]
 
-        for i in qs.select_related('ioc_type').order_by('created_at'):
-            fuente = i.source or "Sin fuente"
-            tipo = i.ioc_type.name if getattr(i, 'ioc_type', None) else "Desconocido"
-            indicador = i.value or "N/A"
+        # Optimización: prefetch de tools -> tool para evitar N+1
+        qs = qs.select_related('ioc_type').prefetch_related('tools__tool').order_by('created_at')
 
-            herramientas = ", ".join(
-                i.tools.values_list('tool__name', flat=True)
-            ) or "Sin herramienta"
+        for i in qs:
+            fuente = (i.source or "Sin fuente")[:24]
+            tipo = (i.ioc_type.name if getattr(i, 'ioc_type', None) else "Desconocido")[:14]
+            indicador = (i.value or "N/A")[:44]
+
+            # Uso de la relación precargada (python-side)
+            # i.tools.all() devuelve objetos IocTool. Accedemos a .tool.name
+            tool_names = [t.tool.name for t in i.tools.all()]
+            herramientas = (", ".join(tool_names) or "Sin herramienta")[:39]
 
             fecha = i.created_at.strftime("%Y-%m-%d %H:%M")
 
             lines.append(
-                f"{fuente:<20} {tipo:<15} {indicador:<35} {herramientas:<40} {fecha:<20}"
+                f"{fuente:<25} {tipo:<15} {indicador:<45} {herramientas:<40} {fecha:<20}"
             )
 
         return "\n".join(lines)
 
-from django.http import HttpResponse
-from zipfile import ZipFile
-import io
 
 class ExportIngestedByBatchView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -902,7 +992,7 @@ class ExportIngestedByBatchView(APIView):
 
         buffer = io.BytesIO()
 
-        with ZipFile(buffer, 'w') as zip_file:
+        with zipfile.ZipFile(buffer, 'w') as zip_file:
             grouped = {}
 
             for ioc in iocs:
@@ -926,31 +1016,20 @@ class ExportIngestedByBatchView(APIView):
 
         return response
 
-from django.contrib.auth import authenticate, login, logout
 
-
-from django.contrib.auth import authenticate, login
-from django.shortcuts import render, redirect
-
-
+# --- Auth Views ---
 
 def login_view(request):
     if request.method == 'POST':
         username = request.POST.get('username')
         password = request.POST.get('password')
 
-        print("USERNAME:", username)
-        print("PASSWORD:", password)
-
         user = authenticate(request, username=username, password=password)
-        print("AUTH RESULT:", user)
 
         if user is not None:
             login(request, user)
-            print("LOGIN OK")
             return redirect('/')
         else:
-            print("LOGIN FAIL")
             return render(request, 'registration/login.html', {
                 'error': 'Usuario o contraseña incorrectos'
             })
@@ -958,42 +1037,13 @@ def login_view(request):
     return render(request, 'registration/login.html')
 
 
-class LogoutView(APIView):
-    def post(self, request):
-        logout(request)
-        return Response({'detail': 'Sesión cerrada'})
-
-
-
-def login_page(request):
-    return render(request, 'ioc_manager/login.html')
-
-from django.contrib.auth import login
-
-import json
-
-def api_login(request):
-    if request.method != 'POST':
-        return JsonResponse({'detail': 'Method not allowed'}, status=405)
-
-    data = json.loads(request.body)
-    user = authenticate(
-        request,
-        username=data.get('username'),
-        password=data.get('password')
-    )
-
-    if user is None:
-        return JsonResponse({'detail': 'Invalid credentials'}, status=401)
-
-    login(request, user)
-    return JsonResponse({'ok': True})
-
-from django.contrib.auth import logout
-from django.shortcuts import redirect
-
 def logout_view(request):
     logout(request)
-    return redirect('/login/')
+
+# ==========================================================
+# CSV CLEANER VIEW
+# ==========================================================
+
+
 
 

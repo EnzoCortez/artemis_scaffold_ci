@@ -14,6 +14,7 @@ window.estadoCarga = {
 // 🔥 ESTADO GLOBAL DE LA CARGA
 window.iocsDuplicados = [];
 window.iocsNuevos = [];
+window.originalFilename = 'iocs';
 
 
 /* ---------------------------
@@ -35,12 +36,12 @@ function getCookie(name) {
   return cookie ? decodeURIComponent(cookie.split('=')[1]) : null;
 }
 
-window.apiFetch = async function(url, opts = {}) {
+window.apiFetch = async function (url, opts = {}) {
   opts.credentials = opts.credentials || 'include';
   opts.headers = opts.headers || {};
 
   const method = (opts.method || 'GET').toUpperCase();
-  if (['POST','PUT','PATCH','DELETE'].includes(method)) {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     const csrftoken = getCookie('csrftoken');
     if (csrftoken && !opts.headers['X-CSRFToken']) {
       opts.headers['X-CSRFToken'] = csrftoken;
@@ -59,7 +60,7 @@ window.apiFetch = async function(url, opts = {}) {
 /* ---------------------------
    UI helpers
 ----------------------------*/
-function showMessage(elOrId, text, kind='ok') {
+function showMessage(elOrId, text, kind = 'ok') {
   // kind: ok / warn / err
   let el = typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
   if (!el) {
@@ -70,7 +71,7 @@ function showMessage(elOrId, text, kind='ok') {
   el.className = 'message ' + (kind === 'ok' ? 'success' : (kind === 'warn' ? 'warning' : 'err'));
   el.style.display = 'block';
   // hide after a while
-  setTimeout(()=>{ try{ el.style.display = 'none'; } catch(e){} }, 8000);
+  setTimeout(() => { try { el.style.display = 'none'; } catch (e) { } }, 8000);
 }
 
 function downloadBlob(filename, blob) {
@@ -111,7 +112,18 @@ function detectarTipoIoc(value) {
   if (ipv4.test(v)) return 'IP';
   if (ipv6.test(v)) return 'IPV6';
   if (email.test(v)) return 'Correo';
+
+  // URL explícita (http/https)
   if (url.test(v)) return 'URL';
+
+  // URL implícita (dominio + path)
+  // Si tiene barra, y lo de antes parece dominio, es URL
+  if (v.includes('/') && !v.includes('@')) {
+    const parts = v.split('/');
+    // Basic check on first part
+    if (domain.test(parts[0])) return 'URL';
+  }
+
   if (domain.test(v)) return 'Dominio';
   return 'Desconocido';
 }
@@ -134,6 +146,7 @@ function renderListIntoUL(ulEl, items, options = {}) {
   if (!Array.isArray(items) || items.length === 0) {
     return;
   }
+
   items.forEach(it => {
     let value = '';
     let type = '';
@@ -190,9 +203,22 @@ async function validarCarga() {
     return showMessage(msgEl, 'Selecciona la fuente del lote.', 'warn');
   }
 
+  let finalFuente = fuenteEl.value;
+  if (finalFuente === 'Otro') {
+    const customEl = document.getElementById('fuenteOTRO');
+    if (!customEl || !customEl.value.trim()) {
+      return showMessage(msgEl, 'Por favor, especifique el nombre de la fuente en el campo de texto.', 'warn');
+    }
+    finalFuente = customEl.value.trim();
+  }
+
   const fd = new FormData();
   fd.append('file', fileInput.files[0]);
-  fd.append('fuente', fuenteEl.value);
+  fd.append('fuente', finalFuente); // Usar la fuente procesada
+
+  // Save filename for export
+  const fname = fileInput.files[0].name;
+  window.originalFilename = fname.substring(0, fname.lastIndexOf('.')) || fname;
 
   showMessage(msgEl, 'Validando archivo...', 'ok');
 
@@ -214,7 +240,7 @@ async function validarCarga() {
 
     const duplicatesRaw = data.duplicates || [];
     const newRaw = data.new || [];
-    const fuente = fuenteEl.value;
+    const fuente = finalFuente; // Usar la variable local correcta
 
     const duplicates = duplicatesRaw.map(d => ({
       value: d.value || d,
@@ -283,7 +309,7 @@ async function validarCarga() {
 
     showMessage(
       msgEl,
-      `Proceso completado. Ingestados: ${newItems.length}, Duplicados: ${duplicates.length}`,
+      `Proceso completado. IoCs nuevos: ${newItems.length}, Duplicados: ${duplicates.length}`,
       'ok'
     );
 
@@ -302,7 +328,14 @@ async function validarCarga() {
 async function cargarNuevos() {
   const msgEl = document.getElementById('msgCarga');
   const ul = document.getElementById('listaNuevos');
-  const fuente = document.getElementById('fuenteSelect') ? document.getElementById('fuenteSelect').value : null;
+
+  // Logic to get source
+  const fuenteSelect = document.getElementById('fuenteSelect');
+  let fuente = fuenteSelect ? fuenteSelect.value : null;
+  if (fuente === 'Otro') {
+    const custom = document.getElementById('fuenteOTRO');
+    if (custom) fuente = custom.value.trim();
+  }
 
   if (!ul) return showMessage(msgEl, 'No se encontró la lista de nuevos.', 'err');
   const itemsText = Array.from(ul.querySelectorAll('li')).map(li => li.textContent.trim()).filter(Boolean);
@@ -345,22 +378,22 @@ async function cargarNuevos() {
 
     showMessage(msgEl, `Insertados: ${inserted.length}. Existían: ${existing.length}. Errores: ${errors.length}`, errors.length ? 'warn' : 'ok');
 
-  
+
     // Descargar TXT de ingestados por batch (solo si batch existe y hay insertados)
-  if (batch && inserted.length) {
-    try {
-      const r1 = await apiFetch(`/api/export/ingested-by-batch/${encodeURIComponent(batch)}/`);
-      if (r1.ok) {
-        const blob = await r1.blob();
-        downloadBlob(`iocs_ingestados_${batch}.zip`, blob);
-      } else {
-        const txt = await r1.text();
-        console.warn('No se pudo descargar ingestados:', r1.status, txt);
+    if (batch && inserted.length) {
+      try {
+        const r1 = await apiFetch(`/api/export/ingested-by-batch/${encodeURIComponent(batch)}/`);
+        if (r1.ok) {
+          const blob = await r1.blob();
+          downloadBlob(`iocs_ingestados_${batch}.zip`, blob);
+        } else {
+          const txt = await r1.text();
+          console.warn('No se pudo descargar ingestados:', r1.status, txt);
+        }
+      } catch (err) {
+        console.warn('Error descargando ingestados', err);
       }
-    } catch (err) {
-      console.warn('Error descargando ingestados', err);
     }
-  }
 
     // Descargar TXT de duplicados (si existen)
 
@@ -393,38 +426,20 @@ async function cargarNuevos() {
   - generarTxtIngestados(): POST con items = lista de duplicados mostrados en UI
   - generarTxtNoIngresados(): POST con items = lista de nuevos mostrados en UI
 ----------------------------*/
+
 function generarTxtDuplicadosDesdeValidacion() {
-  // Validar que existan duplicados en memoria
   if (!window.iocsDuplicados || !window.iocsDuplicados.length) {
     alert('No hay IoCs duplicados para exportar.');
     return;
   }
 
-  // Construir contenido del TXT
-  const contenido = window.iocsDuplicados
-    .map(d => d.value)
-    .filter(Boolean)
-    .join('\n');
+  // Usar nuevo endpoint backend
+  const items = window.iocsDuplicados.map(d => ({
+    value: d.value,
+    detected_type: d.detected_type || 'Desconocido'
+  }));
 
-  if (!contenido.trim()) {
-    alert('Los duplicados están vacíos.');
-    return;
-  }
-
-  // Crear archivo TXT
-  const blob = new Blob([contenido], { type: 'text/plain;charset=utf-8' });
-
-  // Descargar
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `iocs_duplicados_${new Date().toISOString().slice(0,10)}.txt`;
-  document.body.appendChild(a);
-  a.click();
-
-  // Limpieza
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadClassifiedZip(items, (window.originalFilename || 'iocs') + '_duplicados');
 }
 
 
@@ -433,15 +448,49 @@ function generarTxtDuplicadosDesdeValidacion() {
 
 
 async function generarTxtNuevos() {
-  const items = window.estadoCarga?.nuevos || [];
-  if (!items.length) {
+  const itemsRaw = window.estadoCarga?.nuevos || [];
+  if (!itemsRaw.length) {
     alert('No hay IoCs nuevos.');
     return;
   }
 
-  const content = items.join('\n') + '\n';
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  downloadBlob('iocs_nuevos.txt', blob);
+  const items = itemsRaw.map(val => ({
+    value: val,
+    detected_type: detectingTypeHelper(val)
+  }));
+
+  downloadClassifiedZip(items, (window.originalFilename || 'iocs') + '_nuevos');
+}
+
+async function downloadClassifiedZip(items, title) {
+  try {
+    const res = await apiFetch('/api/export/classified/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: items,
+        filename_prefix: title
+      })
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      alert(`Error generando ZIP: ${txt}`);
+      return;
+    }
+
+    const blob = await res.blob();
+    downloadBlob(`${title}_classified.zip`, blob);
+
+  } catch (e) {
+    console.error(e);
+    alert('Error conectando con el servidor para exportar.');
+  }
+}
+
+// Helper para reusar logica si hace falta
+function detectingTypeHelper(v) {
+  return (typeof detectarTipoIoc === 'function') ? detectarTipoIoc(v) : 'Desconocido';
 }
 
 
@@ -489,7 +538,7 @@ function promptChangeState(iocId) {
   const newState = prompt('Ingrese nuevo estado (BLOQUEADO o DEPURADO):');
   if (!newState) return;
   const ns = newState.toUpperCase().trim();
-  if (!['BLOQUEADO','DEPURADO'].includes(ns)) return alert('Estado inválido.');
+  if (!['BLOQUEADO', 'DEPURADO'].includes(ns)) return alert('Estado inválido.');
   cambiarEstadoManual(iocId, ns);
 }
 
@@ -527,7 +576,7 @@ async function cargarTxtEstados() {
   if (!select || !select.value) return showMessage(msgEl, 'Selecciona un nuevo estado (BLOQUEADO o DEPURADO).', 'warn');
 
   const newState = select.value.toUpperCase().trim();
-  if (!['BLOQUEADO','DEPURADO'].includes(newState)) return showMessage(msgEl, 'Estado inválido. Usa BLOQUEADO o DEPURADO.', 'warn');
+  if (!['BLOQUEADO', 'DEPURADO'].includes(newState)) return showMessage(msgEl, 'Estado inválido. Usa BLOQUEADO o DEPURADO.', 'warn');
 
   const fd = new FormData();
   fd.append('file', fileInput.files[0]);
@@ -544,9 +593,9 @@ async function cargarTxtEstados() {
     const data = await res.json();
     const out = [
       `Actualizados: ${data.updated_count || 0}`,
-      `Encontrados: ${ (data.updated && data.updated.length) || 0 }`,
-      `No encontrados: ${ (data.not_found && data.not_found.length) || 0 }`,
-      `Errores: ${ (data.errors && data.errors.length) || 0 }`
+      `Encontrados: ${(data.updated && data.updated.length) || 0}`,
+      `No encontrados: ${(data.not_found && data.not_found.length) || 0}`,
+      `Errores: ${(data.errors && data.errors.length) || 0}`
     ];
     if (data.not_found && data.not_found.length) {
       out.push('No encontrados (ejemplo):');
@@ -554,7 +603,7 @@ async function cargarTxtEstados() {
     }
     if (data.errors && data.errors.length) {
       out.push('Errores (ejemplo):');
-      data.errors.slice(0,20).forEach(e => out.push(` - ${e.value}: ${e.error}`));
+      data.errors.slice(0, 20).forEach(e => out.push(` - ${e.value}: ${e.error}`));
     }
     showMessage(msgEl, out.join('\n'), 'ok');
     msgEl.style.whiteSpace = 'pre-wrap';
@@ -732,3 +781,20 @@ function getCookie(name) {
 
 
 
+
+// Initialize listeners
+document.addEventListener('DOMContentLoaded', function () {
+  const fSelect = document.getElementById('fuenteSelect');
+  const fOtro = document.getElementById('fuenteOTRO');
+  if (fSelect && fOtro) {
+    fSelect.addEventListener('change', function () {
+      if (this.value === 'Otro') {
+        fOtro.style.display = 'block';
+        fOtro.focus();
+      } else {
+        fOtro.style.display = 'none';
+        fOtro.value = ''; // clear if hidden
+      }
+    });
+  }
+});

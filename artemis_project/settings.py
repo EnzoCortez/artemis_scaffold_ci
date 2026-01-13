@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'changeme')
-DEBUG = False
-ALLOWED_HOSTS = [os.environ.get('ALLOWED_HOST', '127.0.0.1')]
+DEBUG = True
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -44,16 +44,13 @@ WSGI_APPLICATION = 'artemis_project.wsgi.application'
 # settings.py 
 DATABASES = {
     'default': {
-        'ENGINE': os.environ.get('DB_ENGINE', 'django.db.backends.mysql'),
-        'NAME': os.environ.get('DB_NAME', 'artemis_db'),
-        'USER': os.environ.get('DB_USER', 'artemis_user'),
-        'PASSWORD': os.environ.get('DB_PASS', 'artemis_password'),
-        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
-        'PORT': os.environ.get('DB_PORT', '3306'),
-        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '0')),
+        'ENGINE': 'mssql',
+        'NAME': 'artemis_db',
+        'USER': 'artemis_user',
+        'PASSWORD': 'PasswordSegura123!',
+        'HOST': 'ENZO\\SQLEXPRESS',
         'OPTIONS': {
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            'charset': 'utf8mb4',
+            'driver': 'ODBC Driver 17 for SQL Server',
         },
     }
 }

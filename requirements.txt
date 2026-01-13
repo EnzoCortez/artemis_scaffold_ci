@@ -5,3 +5,4 @@ pyodbc
 waitress
 python-dotenv
 mysqlclient
+pymysql

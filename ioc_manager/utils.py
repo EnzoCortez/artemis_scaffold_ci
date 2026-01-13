@@ -67,19 +67,15 @@ def detect_ioc_type(value: str) -> Optional[str]:
 
     # URL explícita (con protocolo)
     if v.lower().startswith("http://") or v.lower().startswith("https://"):
-        # validamos con la regex robusta
-        if _RE_URL.fullmatch(v):
-            return "URL"
-        # aún si no pasa regex completa, considerarlo URL por protocolo
         return "URL"
 
     # URL implícita: tiene "/" y la parte izquierda es dominio válido
     if "/" in v:
-        left = v.split("/", 1)[0]
+        parts = v.split("/", 1)
+        left = parts[0]
+        # Si tiene path y el host parece dominio, es URL
         if DOMAIN_REGEX.fullmatch(left):
-            if _RE_URL.fullmatch(v):
-                return "URL"
-            return "URL"
+             return "URL"
 
 
         # Dominio simple
@@ -96,7 +92,7 @@ def detect_ioc_type(value: str) -> Optional[str]:
 
 _VALID_TOOL_IOCTYPES = {
     "EDR (CROWDSTRIKE)": {
-        "types": {"IP", "Hash","Dominio"},
+        "types": {"IP", "Hash", "Dominio"},
         "hash_algos": {"md5", "sha256"},
     },
     "IPS": {
@@ -371,6 +367,17 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
             if ioc.ioc_type_id not in allowed_rules.get(tool.id, set()):
                 continue
 
+            # 🔒 Validación de algoritmo de Hash (EDR vs IPS)
+            if ioc_type_name == "Hash":
+                # Detectar algoritmo del valor del IOC
+                algo = detect_hash_algorithm(ioc.value)
+                if not algo:
+                    continue # Hash inválido, saltar
+                
+                allowed_algos = config.get("hash_algos")
+                if allowed_algos and algo not in allowed_algos:
+                    continue # Algoritmo no permitido para esta herramienta case
+
             key = (ioc.id, tool.id)
 
             if key not in existing_links:
@@ -401,7 +408,6 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
         if ioc_tools_to_create:
             IocTool.objects.bulk_create(
                 ioc_tools_to_create,
-                ignore_conflicts=True,
                 batch_size=1000
             )
 
@@ -416,3 +422,5 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
                 history_to_create,
                 batch_size=1000
             )
+
+

@@ -46,10 +46,19 @@ def bulk_register_ingestion(iocs, user=None):
                 )
             )
 
+    # 🔹 Deduplicación Python-side para MSSQL
+    existing_q = IocTool.objects.filter(ioc__in=iocs).values_list('ioc_id', 'tool_id')
+    existing_set = set(existing_q)
+
+    final_ioc_tools = []
+    for it in ioc_tools_bulk:
+        if (it.ioc_id, it.tool_id) not in existing_set:
+            final_ioc_tools.append(it)
+            existing_set.add((it.ioc_id, it.tool_id))
+
     # 🔥 Inserts en bloque
     IocTool.objects.bulk_create(
-        ioc_tools_bulk,
-        ignore_conflicts=True,
+        final_ioc_tools,
         batch_size=1000
     )
     Ingestion.objects.bulk_create(
