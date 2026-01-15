@@ -1,0 +1,12 @@
+<service>
+  <id>ArtemisService</id>
+  <name>Artemis Service</name>
+  <description>Servicio para Artemis IOC Manager (Waitress)</description>
+  <executable>C:\inetpub\wwwroot\Artemis\venv\Scripts\python.exe</executable>
+  <arguments>run_waitress.py</arguments>
+  <workingdirectory>C:\inetpub\wwwroot\Artemis</workingdirectory>
+  <log mode="roll"></log>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="20 sec"/>
+  <resetfailure>1 hour</resetfailure>
+</service>

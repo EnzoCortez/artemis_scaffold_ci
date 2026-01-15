@@ -258,31 +258,13 @@ async function validarCarga() {
     window.estadoCarga.nuevos = newItems.map(n => n.value);
 
     /* ===============================
-       2️⃣ INGESTA AUTOMÁTICA
+       2️⃣ (ELIMINADO) INGESTA AUTOMÁTICA
+       - Ahora se requiere clic manual en "Cargar IoCs nuevos".
     =============================== */
     if (newItems.length === 0) {
-      showMessage(msgEl, 'No hay IoCs nuevos para ingestar.', 'warn');
+      showMessage(msgEl, 'No hay IoCs nuevos (todos duplicados o inválidos).', 'warn');
     } else {
-      showMessage(msgEl, 'Ingestando IoCs nuevos...', 'ok');
-
-      const ingestRes = await apiFetch('/api/load-new/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: newItems,
-          fuente: fuente
-        })
-      });
-
-      if (!ingestRes.ok) {
-        const txt = await ingestRes.text();
-        return showMessage(msgEl, `Error ingesta: ${txt}`, 'err');
-      }
-
-      const ingestData = await ingestRes.json();
-
-      // 🔑 batch_id PARA DEPURACIÓN
-      window.lastBatchId = ingestData.batch_id;
+      showMessage(msgEl, `Validación completa. ${newItems.length} nuevos listos para cargar.`, 'ok');
     }
 
     /* ===============================
@@ -699,7 +681,12 @@ async function generarReporte() {
   const inicio = document.getElementById('fechaInicio').value;
   const fin = document.getElementById('fechaFin').value;
   const tipo = document.getElementById('tipoReporte').value || 'resumen';
+
   const fuente = document.getElementById('fuenteSelectReport') ? document.getElementById('fuenteSelectReport').value.trim() : '';
+
+  // Nuevos params
+  const fuenteCustom = document.getElementById('fuenteCustomReport') ? document.getElementById('fuenteCustomReport').value.trim() : '';
+  const iocType = document.getElementById('filtroIocTypeReport') ? document.getElementById('filtroIocTypeReport').value.trim() : '';
 
   const msgEl = document.getElementById('msgReporte');
   if (!inicio || !fin) {
@@ -711,6 +698,8 @@ async function generarReporte() {
   // construir query string
   const params = new URLSearchParams({ inicio, fin, tipo });
   if (fuente) params.set('fuente', fuente);
+  if (fuenteCustom) params.set('fuente_custom', fuenteCustom);
+  if (iocType) params.set('ioc_type', iocType);
 
   try {
     const res = await apiFetch(`/api/reportes/?${params.toString()}`, { method: 'GET' });
@@ -794,7 +783,23 @@ document.addEventListener('DOMContentLoaded', function () {
       } else {
         fOtro.style.display = 'none';
         fOtro.value = ''; // clear if hidden
+        fOtro.value = ''; // clear if hidden
       }
     });
+
+    // Report Source Custom
+    const rSelect = document.getElementById('fuenteSelectReport');
+    const rOtro = document.getElementById('fuenteCustomReport');
+    if (rSelect && rOtro) {
+      rSelect.addEventListener('change', function () {
+        if (this.value === 'Otro') {
+          rOtro.style.display = 'inline-block'; // or block
+          rOtro.focus();
+        } else {
+          rOtro.style.display = 'none';
+          rOtro.value = '';
+        }
+      });
+    }
   }
 });

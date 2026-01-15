@@ -94,6 +94,7 @@ class IocEntry(models.Model):
 
     ioc_type = models.ForeignKey(IocType, on_delete=models.PROTECT, related_name='iocs')
     value = models.CharField(max_length=500)
+    value_hash = models.CharField(max_length=64, null=True, blank=True, db_index=True)  # SHA256 para indexación eficiente
     created_at = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_BLOCKED)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
@@ -104,9 +105,9 @@ class IocEntry(models.Model):
 
     class Meta:
         db_table = 'ioc_manager_iocentry'
-        unique_together = ('ioc_type', 'value')
+        unique_together = ('ioc_type', 'value') # Mantener value por ahora, luego migrar a value_hash
         indexes = [
-            models.Index(fields=['ioc_type', 'value']),
+            models.Index(fields=['ioc_type', 'value_hash']), # Index optimizado
             models.Index(fields=['status']),
             models.Index(fields=['upload_batch']),
         ]
@@ -170,7 +171,7 @@ class Ingestion(models.Model):
 class IocHistory(models.Model):
     ioc = models.ForeignKey(IocEntry, on_delete=models.CASCADE, related_name='history', null=True)
     action = models.CharField(max_length=100)
-    user = models.CharField(max_length=150, null=True, blank=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True) # Change to FK
     timestamp = models.DateTimeField(auto_now_add=True)
     comment = models.TextField(null=True, blank=True)
 

@@ -399,7 +399,7 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
                     IocHistory(
                         ioc=ioc,
                         action=f"Ingestado por {tool.name}",
-                        user=user.username if user else None
+                        user=user
                     )
                 )
 

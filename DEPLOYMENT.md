@@ -22,9 +22,10 @@ Antes de comenzar, asegúrese de descargar e instalar los siguientes componentes
     *   Necesario para la funcionalidad de Reverse Proxy.
     *   Descarga: [Application Request Routing 3.0](https://www.iis.net/downloads/microsoft/application-request-routing)
 
-5.  **NSSM (Non-Sucking Service Manager)**
-    *   Utilidad para ejecutar Python/Waitress como servicio de Windows.
-    *   Descarga: [NSSM 2.24 (zip)](https://nssm.cc/release/nssm-2.24.zip)
+5.  **WinSW (Windows Service Wrapper)**
+    *   Alternativa robusta a NSSM (ya que el sitio oficial suele estar caído).
+    *   Descarga: [WinSW v2.12.0 (o superior)](https://github.com/winsw/winsw/releases)
+    *   Descargue el archivo `WinSW-x64.exe`.
 
 ---
 
@@ -74,28 +75,28 @@ Antes de comenzar, asegúrese de descargar e instalar los siguientes componentes
 
 ---
 
-## Paso 3: Configurar el Servicio de Windows (Waitress)
+## Paso 3: Configurar el Servicio de Windows (usando WinSW)
 
 La aplicación correrá en puerto 8080 en segundo plano.
 
-1.  Extraiga el ejecutable `nssm.exe` (de la carpeta win64 del zip descargado) y cópielo a `C:\Windows\System32` (o a una carpeta en el PATH).
-2.  Instale el servicio:
+1.  Mueva el archivo `WinSW-x64.exe` descargado a la carpeta del proyecto: `C:\inetpub\wwwroot\Artemis`.
+2.  Renómbrelo a **`ArtemisService.exe`**.
+3.  Asegúrese de que el archivo de configuración `ArtemisService.xml` (generado en el proyecto) esté en la misma carpeta.
+    *   Este archivo ya apunta a `venv\Scripts\python.exe` y `run_waitress.py`.
+
+4.  Instalar el servicio:
+    Abra PowerShell como Administrador en esa carpeta y ejecute:
     ```powershell
-    nssm.exe install ArtemisService
+    .\ArtemisService.exe install
     ```
-3.  En la ventana que se abre, configure:
-    *   **Path**: `C:\inetpub\wwwroot\Artemis\venv\Scripts\python.exe`
-    *   **Startup directory**: `C:\inetpub\wwwroot\Artemis`
-    *   **Arguments**: `run_waitress.py`
-4.  Vaya a la pestaña **I/O** y configure logs (opcional pero recomendado):
-    *   Output (stdout): `C:\inetpub\wwwroot\Artemis\service.log`
-    *   Error (stderr): `C:\inetpub\wwwroot\Artemis\service_err.log`
-5.  Clic en **Install Service**.
-6.  Inicie el servicio:
+
+5.  Iniciar el servicio:
     ```powershell
-    nssm.exe start ArtemisService
+    .\ArtemisService.exe start
     ```
+    
     *Verifique en navegador que `http://localhost:8080` responde.*
+    *Para ver logs, revise los archivos `.log` que se crearán en la misma carpeta.*
 
 ---
 

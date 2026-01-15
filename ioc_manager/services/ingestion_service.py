@@ -1,4 +1,7 @@
 from django.utils import timezone
+import hashlib
+from django.contrib.auth import get_user_model
+User = get_user_model()
 from ioc_manager.models import (
     IocEntry, IocTool, Ingestion,
     ToolIndicatorRule, IocHistory
@@ -20,7 +23,11 @@ def bulk_register_ingestion(iocs, user=None):
     history_bulk = []
 
     now = timezone.now()
-    username = user.username if user and hasattr(user, 'username') else 'system'
+    if user and hasattr(user, 'pk'):
+        # Ensure user is a model instance, not just a name
+        user_instance = user
+    else:
+        user_instance = None # System or anonymous
 
     for ioc in iocs:
         tool_ids = rules_map.get(ioc.ioc_type_id, [])
@@ -37,11 +44,14 @@ def bulk_register_ingestion(iocs, user=None):
                     ingested_at=now
                 )
             )
+
+        # 🔹 Optimización Historial: 1 registro por IOC en lugar de N registros
+        if tool_ids:
             history_bulk.append(
                 IocHistory(
                     ioc=ioc,
-                    action="IOC asociado automáticamente a herramienta",
-                    user=username,
+                    action=f"IOC asociado a {len(tool_ids)} herramientas",
+                    user=user_instance,
                     comment="Carga masiva optimizada"
                 )
             )
@@ -87,6 +97,7 @@ def validate_and_ingest(items, fuente):
         ioc_type = detect_ioc_type(value)
 
         if IocEntry.objects.filter(value=value).exists():
+            # TODO: Optimizar usando value_hash en queries futuras
             IocLoadResult.objects.create(
                 batch=batch,
                 value=value,
@@ -95,17 +106,16 @@ def validate_and_ingest(items, fuente):
             )
             batch.duplicated += 1
         else:
+            # Calcular hash SHA256
+            val_hash = hashlib.sha256(value.encode('utf-8')).hexdigest()
             IocEntry.objects.create(
                 value=value,
+                value_hash=val_hash,
                 ioc_type=ioc_type,
                 source=fuente
             )
-            IocLoadResult.objects.create(
-                batch=batch,
-                value=value,
-                ioc_type=ioc_type,
-                status='INGESTADO'
-            )
+            # 🔹 Optimización: NO guardar IocLoadResult si es exitoso para ahorrar espacio
+            # IocLoadResult.objects.create(batch=batch, value=value, ioc_type=ioc_type, status='INGESTADO')
             batch.inserted += 1
 
     batch.save()

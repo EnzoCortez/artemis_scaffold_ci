@@ -4,6 +4,7 @@ import os
 import uuid
 import logging
 import zipfile
+import hashlib
 from datetime import datetime
 from django.utils import timezone
 from django.utils.encoding import smart_str
@@ -236,10 +237,12 @@ class LoadNewIocsView(APIView):
                 existing.append(value)
                 continue
 
+            val_hash = hashlib.sha256(value.encode('utf-8')).hexdigest()
             to_create.append(
                 IocEntry(
                     ioc_type=ioc_type,
                     value=value,
+                    value_hash=val_hash,
                     created_by=user,
                     source=fuente,
                     upload_batch=batch_id
@@ -601,7 +604,7 @@ class ChangeIocStateView(APIView):
         IocHistory.objects.create(
             ioc=ioc, 
             action=f"STATE_CHANGE {old_state} -> {new_state}", 
-            user=request.user.username, 
+            user=request.user, 
             comment="Cambio de estado manual desde UI"
         )
         
@@ -620,7 +623,7 @@ class AuditCreateView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         label = serializer.validated_data['label']
-        h = IocHistory.objects.create(ioc=None, action=f'AUDIT_APPROVED {label}', user=request.user.username, comment=f'Auditoría creada desde UI por {request.user.username}')
+        h = IocHistory.objects.create(ioc=None, action=f'AUDIT_APPROVED {label}', user=request.user, comment=f'Auditoría creada desde UI por {request.user.username}')
         return Response({'audit_id': h.id, 'detail': 'Auditoría registrada'}, status=status.HTTP_201_CREATED)
 
 
@@ -665,7 +668,7 @@ class PurgeApiView(APIView):
         # REFACTOR: Evitar iterator() + write (ODBC Error)
         # Procesar en lotes de IDs
         
-        user_name = request.user.username
+        user_name = request.user # Pass Model Instance
         BATCH_SIZE = 1000
         
         # 1. Obtener todos los IDs a eliminar (List evaluation para cerrar cursor)
@@ -706,7 +709,7 @@ class BulkChangeStateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        user = request.user.username if request.user.is_authenticated else "system"
+        user = request.user if request.user.is_authenticated else None
 
         new_state = request.data.get("new_state")
         if new_state not in ("BLOQUEADO", "DEPURADO"):
@@ -820,6 +823,8 @@ class GenerarReporteView(APIView):
         inicio = request.GET.get("inicio")
         fin = request.GET.get("fin")
         fuente_filter = request.GET.get("fuente")
+        fuente_custom = request.GET.get("fuente_custom") # Nuevo param custom
+        ioc_type_filter = request.GET.get("ioc_type")    # Nuevo param type
 
         if not inicio or not fin:
             return JsonResponse({"error": "Debes proporcionar 'inicio' y 'fin' (YYYY-MM-DD)."}, status=400)
@@ -835,13 +840,22 @@ class GenerarReporteView(APIView):
         end_dt = timezone.make_aware(datetime.combine(end_date, datetime.max.time()), tz)
 
         qs = IocEntry.objects.filter(created_at__gte=start_dt, created_at__lte=end_dt)
+        
+        # 1. Filtro Fuente
         if fuente_filter:
             if fuente_filter.lower() == "otro":
-                # Excluir fuentes estándar
-                STANDARD_SOURCES = ["IBM", "Cisco", "Kaspersky", "Pichincha"]
-                qs = qs.exclude(source__in=STANDARD_SOURCES)
+                if fuente_custom:
+                    qs = qs.filter(source__iexact=fuente_custom.strip())
+                else:
+                    # Excluir fuentes estándar
+                    STANDARD_SOURCES = ["IBM", "Cisco", "Kaspersky", "Pichincha"]
+                    qs = qs.exclude(source__in=STANDARD_SOURCES)
             else:
                 qs = qs.filter(source__iexact=fuente_filter)
+        
+        # 2. Filtro Tipo IOC
+        if ioc_type_filter:
+            qs = qs.filter(ioc_type__name__iexact=ioc_type_filter)
 
         total_period = qs.count()
 
@@ -1039,6 +1053,7 @@ def login_view(request):
 
 def logout_view(request):
     logout(request)
+    return redirect('/login/')
 
 # ==========================================================
 # CSV CLEANER VIEW
