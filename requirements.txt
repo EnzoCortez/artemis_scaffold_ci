@@ -4,5 +4,4 @@ mssql-django
 pyodbc
 waitress
 python-dotenv
-mysqlclient
-pymysql
+

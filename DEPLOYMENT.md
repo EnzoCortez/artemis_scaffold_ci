@@ -44,6 +44,7 @@ Antes de comenzar, asegúrese de descargar e instalar los siguientes componentes
 ## Paso 2: Instalación de la Aplicación
 
 1.  Copie la carpeta `artemis_scaffold` a `C:\inetpub\wwwroot\Artemis` (o ruta de preferencia).
+    *   **IMPORTANTE**: No copie la carpeta `venv` si ya existe. Si la copia, bórrela en el destino antes de continuar, ya que los entornos virtuales no son "portables".
 2.  Abra PowerShell como Administrador y navegue a esa carpeta.
 3.  Cree el entorno virtual e instale dependencias:
     ```powershell
@@ -52,7 +53,6 @@ Antes de comenzar, asegúrese de descargar e instalar los siguientes componentes
     .\venv\Scripts\activate
     pip install -r requirements.txt
     pip install waitress
-    pip install mssql-django pyodbc
     ```
 
 4.  **Configurar base de datos**:
