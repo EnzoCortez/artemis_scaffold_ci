@@ -3,8 +3,8 @@ import hashlib
 from django.contrib.auth import get_user_model
 User = get_user_model()
 from ioc_manager.models import (
-    IocEntry, IocTool, Ingestion,
-    ToolIndicatorRule, IocHistory
+    IocEntry, IocTool,
+    ToolIndicatorRule
 )
 
 def bulk_register_ingestion(iocs, user=None):
@@ -19,40 +19,22 @@ def bulk_register_ingestion(iocs, user=None):
         rules_map.setdefault(r.ioc_type_id, []).append(r.tool_id)
 
     ioc_tools_bulk = []
-    ingestions_bulk = []
-    history_bulk = []
+    # ingestions_bulk removed
+    # history_bulk removed
 
     now = timezone.now()
-    if user and hasattr(user, 'pk'):
-        # Ensure user is a model instance, not just a name
-        user_instance = user
-    else:
-        user_instance = None # System or anonymous
+    # User param ignored for history, used for optional future auditing if needed
 
     for ioc in iocs:
         tool_ids = rules_map.get(ioc.ioc_type_id, [])
 
         for tool_id in tool_ids:
             ioc_tools_bulk.append(
-                IocTool(ioc_id=ioc.id, tool_id=tool_id)
-            )
-            ingestions_bulk.append(
-                Ingestion(
-                    ioc_id=ioc.id,
+                IocTool(
+                    ioc_id=ioc.id, 
                     tool_id=tool_id,
-                    status=Ingestion.STATUS_PENDING,
+                    status=IocTool.STATUS_PENDING,
                     ingested_at=now
-                )
-            )
-
-        # 🔹 Optimización Historial: 1 registro por IOC en lugar de N registros
-        if tool_ids:
-            history_bulk.append(
-                IocHistory(
-                    ioc=ioc,
-                    action=f"IOC asociado a {len(tool_ids)} herramientas",
-                    user=user_instance,
-                    comment="Carga masiva optimizada"
                 )
             )
 
@@ -69,14 +51,6 @@ def bulk_register_ingestion(iocs, user=None):
     # 🔥 Inserts en bloque
     IocTool.objects.bulk_create(
         final_ioc_tools,
-        batch_size=1000
-    )
-    Ingestion.objects.bulk_create(
-        ingestions_bulk,
-        batch_size=1000
-    )
-    IocHistory.objects.bulk_create(
-        history_bulk,
         batch_size=1000
     )
 

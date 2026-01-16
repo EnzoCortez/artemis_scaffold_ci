@@ -22,6 +22,7 @@ class Tool(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(null=True, blank=True)
     threshold = models.CharField(max_length=100, null=True, blank=True)
+    vendor = models.CharField(max_length=100, null=True, blank=True) # Consolidated from Firewall
 
     class Meta:
         verbose_name = "Herramienta"
@@ -63,25 +64,7 @@ class ToolHashType(models.Model):
         return f"{self.tool} - {self.algorithm}"
 
 
-class Firewall(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    vendor = models.CharField(max_length=100, null=True, blank=True)
 
-    class Meta:
-        verbose_name = "Firewall"
-        verbose_name_plural = "Firewalls"
-
-    def __str__(self):
-        return self.name
-
-
-class FirewallIocType(models.Model):
-    firewall = models.ForeignKey(Firewall, on_delete=models.CASCADE, related_name="ioc_types")
-    ioc_type = models.ForeignKey(IocType, on_delete=models.CASCADE)
-
-    class Meta:
-        unique_together = ('firewall', 'ioc_type')
-        verbose_name = "Relación Firewall - Tipo IOC"
 
 
 class IocEntry(models.Model):
@@ -134,15 +117,6 @@ class IocEntry(models.Model):
 
 
 class IocTool(models.Model):
-    ioc = models.ForeignKey(IocEntry, on_delete=models.CASCADE, related_name='tools')
-    tool = models.ForeignKey(Tool, on_delete=models.CASCADE, related_name='iocs')
-
-    class Meta:
-        unique_together = ('ioc', 'tool')
-        verbose_name = "Relación IOC - Herramienta"
-
-
-class Ingestion(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_INGESTED = 'ingested'
     STATUS_ERROR = 'error'
@@ -152,35 +126,25 @@ class Ingestion(models.Model):
         (STATUS_ERROR, 'Error'),
     ]
 
-    ioc = models.ForeignKey(IocEntry, on_delete=models.CASCADE, related_name='ingestions')
-    tool = models.ForeignKey(Tool, on_delete=models.CASCADE, related_name='ingestions')
-    ingested_at = models.DateTimeField(null=True, blank=True)
+    ioc = models.ForeignKey(IocEntry, on_delete=models.CASCADE, related_name='tools')
+    tool = models.ForeignKey(Tool, on_delete=models.CASCADE, related_name='iocs')
+    
+    # Merged Ingestion fields
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
-    detail = models.TextField(null=True, blank=True)  # para mensajes de error, logs, etc.
+    ingested_at = models.DateTimeField(null=True, blank=True)
+    detail = models.TextField(null=True, blank=True)  # Error logs etc
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        verbose_name = "Ingestión"
-        verbose_name_plural = "Ingestiones"
-        indexes = [models.Index(fields=['status']), models.Index(fields=['ingested_at'])]
+        unique_together = ('ioc', 'tool')
+        verbose_name = "Relación IOC - Herramienta"
+        indexes = [
+            models.Index(fields=['status']),
+            models.Index(fields=['ingested_at'])
+        ]
 
-    def __str__(self):
-        return f"{self.ioc} -> {self.tool} [{self.status}]"
 
 
-class IocHistory(models.Model):
-    ioc = models.ForeignKey(IocEntry, on_delete=models.CASCADE, related_name='history', null=True)
-    action = models.CharField(max_length=100)
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True) # Change to FK
-    timestamp = models.DateTimeField(auto_now_add=True)
-    comment = models.TextField(null=True, blank=True)
-
-    class Meta:
-        indexes = [models.Index(fields=['ioc', 'timestamp'])]
-        ordering = ['-timestamp']
-
-    def __str__(self):
-        return f"{self.ioc} - {self.action} @ {self.timestamp}"
 
 class IocLoadBatch(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)

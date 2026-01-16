@@ -26,9 +26,10 @@ from .utils import associate_iocs_with_allowed_tools_bulk, detect_ioc_type
 from .models import (
     IocEntry,
     IocType,
-    IocHistory,
+    # IocHistory removed
     IocTool,
     Tool,
+
 )
 from .serializers import IocEntrySerializer
 
@@ -600,35 +601,19 @@ class ChangeIocStateView(APIView):
         ioc.status = new_state
         ioc.save()
 
-        # Registrar historial
-        IocHistory.objects.create(
-            ioc=ioc, 
-            action=f"STATE_CHANGE {old_state} -> {new_state}", 
-            user=request.user, 
-            comment="Cambio de estado manual desde UI"
-        )
+        ioc.status = new_state
+        ioc.save()
+
+        # History logging removed (IocHistory model deleted)
         
         return Response({'detail': 'Estado actualizado', 'status': new_state})
 
 
-class AuditCreateSerializer(drf_serializers.Serializer):
-    label = drf_serializers.CharField(max_length=200)
 
-
-class AuditCreateView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        serializer = AuditCreateSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        label = serializer.validated_data['label']
-        h = IocHistory.objects.create(ioc=None, action=f'AUDIT_APPROVED {label}', user=request.user, comment=f'Auditoría creada desde UI por {request.user.username}')
-        return Response({'audit_id': h.id, 'detail': 'Auditoría registrada'}, status=status.HTTP_201_CREATED)
 
 
 class PurgeApiSerializer(drf_serializers.Serializer):
-    audit_id = drf_serializers.IntegerField()
+    audit_id = drf_serializers.IntegerField(required=False, allow_null=True)
     dry_run = drf_serializers.BooleanField(default=False)
 
 
@@ -648,61 +633,61 @@ class PurgeApiView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             
-        audit_id = serializer.validated_data['audit_id']
+        audit_id = serializer.validated_data.get('audit_id')
         dry_run = serializer.validated_data['dry_run']
         
-        try:
-            audit = IocHistory.objects.get(id=audit_id)
-        except IocHistory.DoesNotExist:
-            return Response({'detail': 'Auditoría no encontrada'}, status=status.HTTP_404_NOT_FOUND)
-            
-        if 'AUDIT' not in (audit.action or '').upper():
-            return Response({'detail': 'Registro de historial proporcionado no es una auditoría válida'}, status=status.HTTP_400_BAD_REQUEST)
-            
+        audit_id = serializer.validated_data.get('audit_id')
+        dry_run = serializer.validated_data['dry_run']
+        
+        # Audio logic removed (History model deleted)
+ 
+
         qs = IocEntry.objects.filter(status__iexact='DEPURADO')
         count = qs.count()
         if dry_run:
             return Response({'dry_run': True, 'to_delete': count}, status=status.HTTP_200_OK)
             
-        # registrar historial por cada ioc por trazabilidad
-        # REFACTOR: Evitar iterator() + write (ODBC Error)
-        # Procesar en lotes de IDs
-        
-        user_name = request.user # Pass Model Instance
-        BATCH_SIZE = 1000
-        
-        # 1. Obtener todos los IDs a eliminar (List evaluation para cerrar cursor)
-        # Si son demasiados (millones), esto usa memoria, pero es seguro para DB.
-        # Alternativa: Paginación loop.
-        
-        ids_to_purge = list(qs.values_list('id', flat=True))
-        total_purged = 0
-        
-        for i in range(0, len(ids_to_purge), BATCH_SIZE):
-            chunk_ids = ids_to_purge[i:i + BATCH_SIZE]
-            
-            # Fetch objects for History relation (Django needs instances or IDs)
-            # Para IocHistory(ioc=ioc), necesitamos instancia o setear ioc_id
-            # IocHistory(ioc_id=id) es más eficiente que traer instancias completas
-            
-            history_buffer = [
-                IocHistory(
-                    ioc_id=ioc_id,
-                    action=f'PURGED AFTER AUDIT {audit_id}',
-                    user=user_name,
-                    comment=f'Purgado vía UI tras auditoría {audit_id}'
-                )
-                for ioc_id in chunk_ids
-            ]
-            
-            IocHistory.objects.bulk_create(history_buffer, batch_size=BATCH_SIZE)
-            
-            # DELETE batch
-            # Nota: Django .delete() en QS maneja cascades.
-            IocEntry.objects.filter(id__in=chunk_ids).delete()
-            total_purged += len(chunk_ids)
+        # 1. GENERAR REPORTE TXT (Memoria eficiente via iterator si fuera necesario, pero aquí construimos string)
+        lines = [
+            f"REPORTE DE ELIMINACION DE IOCs (Estado DEPURADO)",
+            f"Fecha: {timezone.now()}",
+            f"Usuario: {request.user.username}",
+            "-" * 80,
+            f"{'IOC':<50} {'Tipo':<20} {'Fuente':<20}",
+            "-" * 80
+        ]
 
-        return Response({'detail': f'Purgados {total_purged} IoCs', 'purged_count': total_purged}, status=status.HTTP_200_OK)
+        # Obtener datos antes de borrar
+        to_delete_qs = qs.values_list('value', 'ioc_type__name', 'source', 'id')
+        
+        # Guardar IDs para borrar
+        ids_to_delete = []
+        
+        for val, itype, src, iid in to_delete_qs:
+             lines.append(f"{val:<50} {itype or 'N/A':<20} {src or 'N/A':<20}")
+             ids_to_delete.append(iid)
+
+        total_purged = len(ids_to_delete)
+        lines.append("-" * 80)
+        lines.append(f"Total eliminados: {total_purged}")
+
+        # 2. BORRAR (Sin crear historial en DB)
+        if ids_to_delete:
+             # Borrar en lotes para evitar bloqueo excesivo si son miles
+             batch_size = 1000
+             for i in range(0, len(ids_to_delete), batch_size):
+                 chunk = ids_to_delete[i:i + batch_size]
+                 IocEntry.objects.filter(id__in=chunk).delete()
+
+        # 3. RETORNAR ARCHIVO
+        report_content = "\n".join(lines)
+        filename = f"reporte_eliminacion_{timezone.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        
+        response = HttpResponse(report_content, content_type='text/plain; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        
+        # Importante: Exponer header para que JS pueda leer nombre si fuera necesario (aunque browser maneja attachment)
+        return response
 
 
 class BulkChangeStateView(APIView):
@@ -785,14 +770,11 @@ class BulkChangeStateView(APIView):
             old = ioc.status
             to_update_ids.append(ioc.id)
 
-            history_objects.append(
-                IocHistory(
-                    ioc_id=ioc.id,
-                    action=f"STATE_CHANGE {old} -> {new_state}",
-                    user=user,
-                    comment=f"Bulk update via UI by {user}"
-                )
-            )
+            old = ioc.status
+            to_update_ids.append(ioc.id)
+
+            # History object creation removed
+
 
             updated.append({
                 "value": ioc.value,
@@ -804,12 +786,10 @@ class BulkChangeStateView(APIView):
             if to_update_ids:
                 IocEntry.objects.filter(id__in=to_update_ids).update(status=new_state)
 
-            if history_objects:
-                IocHistory.objects.bulk_create(history_objects, batch_size=1000)
+        # IocHistory bulk create removed
 
         return Response({
             "updated_count": len(to_update_ids),
-            "updated": updated,
             "not_found": not_found,
             "errors": errors
         }, status=status.HTTP_200_OK)

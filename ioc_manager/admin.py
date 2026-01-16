@@ -1,10 +1,10 @@
 from django.contrib import admin
-from .models import IocType, Tool,ToolHashType, Firewall, FirewallIocType, IocEntry, IocTool, IocHistory
+from .models import IocType, Tool,ToolHashType, IocEntry, IocTool
 admin.site.register(IocType)
 admin.site.register(Tool)
 admin.site.register(ToolHashType)
-admin.site.register(Firewall)
-admin.site.register(FirewallIocType)
+# Firewall removed
+# FirewallIocType removed
 admin.site.register(IocEntry)
 admin.site.register(IocTool)
-admin.site.register(IocHistory)
+# IocHistory removed

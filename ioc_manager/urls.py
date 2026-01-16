@@ -8,8 +8,8 @@ from .views import (
     LoadNewIocsView, 
     IocListView, 
     ExportIngestedTxtView, 
-    ExportNotIngestedTxtView, 
-    AuditCreateView, 
+    ExportNotIngestedTxtView,
+    # AuditCreateView removed
     PurgeApiView, 
     BulkChangeStateView, 
     GenerarReporteView, 
@@ -39,7 +39,8 @@ urlpatterns = [
     path('api/export/not-ingested/', ExportNotIngestedTxtView.as_view(), name='export_not_ingested'),
     path('api/export/classified/', ExportClassifiedView.as_view(), name='export_classified'),
     
-    path('api/audit/create/', AuditCreateView.as_view(), name='audit_create'),
+    # Audit/Purge
+    # path('api/audit/create/': AuditCreateView removed)
     path('api/purge/', PurgeApiView.as_view(), name='purge_api'),
 
     

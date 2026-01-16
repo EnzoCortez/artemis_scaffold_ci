@@ -2,7 +2,7 @@
 import re
 from typing import Optional, Tuple
 from django.utils import timezone
-from .models import IocEntry, IocType, Tool, Ingestion
+from .models import IocEntry, IocType, Tool, IocTool
 
 # ==========================================================
 # 1. DETECTORES DE IOC (robustos)
@@ -200,7 +200,7 @@ def create_or_get_ioc(ioc_type_name: str, value: str, created_by=None, source=No
     return ioc, created
 
 
-def ingest_ioc_to_tool(ioc: IocEntry, tool_name: str, status: str = Ingestion.STATUS_INGESTED, detail: Optional[str] = None, user=None):
+def ingest_ioc_to_tool(ioc: IocEntry, tool_name: str, status: str = IocTool.STATUS_INGESTED, detail: Optional[str] = None, user=None):
     """
     Ingesta un IOC en una herramienta *si* la herramienta lo acepta.
     Si no, retorna None (no crea Ingestion).
@@ -230,23 +230,28 @@ def ingest_ioc_to_tool(ioc: IocEntry, tool_name: str, status: str = Ingestion.ST
         # si no existe el Tool en DB, no se puede crear ingestion
         return None
 
-    ingestion = ioc.register_ingestion(
+    # crear relación IocTool si no existe (o actualizar)
+    # merged: create IocTool WITH status
+    ingestion, created = IocTool.objects.update_or_create(
+        ioc=ioc,
         tool=tool,
-        status=status,
-        ingested_at=timezone.now(),
-        extra_comment=detail,
-        user=user
+        defaults={
+            'status': status,
+            'ingested_at': timezone.now(),
+            'detail': detail
+        }
     )
+    # History removed
     return ingestion
 
 
 def generar_txt_ingestions(qs=None):
     """
-    Genera contenido tipo TSV para ingestions.
+    Genera contenido tipo TSV para ingestions (ahora IocTool).
     """
-    qs = qs or Ingestion.objects.select_related("ioc__ioc_type", "tool").order_by("-created_at")[:1000]
+    qs = qs or IocTool.objects.select_related("ioc__ioc_type", "tool").order_by("-created_at")[:1000]
 
-    lines = ["id_ingestion\tid_ioc\tioc_value\tioc_type\ttool\tstatus\tingested_at\tcreated_at\tdetail"]
+    lines = ["id_link\tid_ioc\tioc_value\tioc_type\ttool\tstatus\tingested_at\tcreated_at\tdetail"]
 
     for ing in qs:
         lines.append(
@@ -306,8 +311,9 @@ from .models import (
     Tool,
     ToolIndicatorRule,
     IocTool,
-    Ingestion,
-    IocHistory
+    IocTool,
+    # Ingestion removed
+    # IocHistory removed
 )
 from .utils import _VALID_TOOL_IOCTYPES
 
@@ -343,14 +349,12 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
         .values_list('ioc_id', 'tool_id')
     )
 
-    existing_ingestions = set(
-        Ingestion.objects.filter(ioc__in=iocs)
-        .values_list('ioc_id', 'tool_id')
-    )
+    # ingesions loaded check removed
+
 
     ioc_tools_to_create = []
-    ingestions_to_create = []
-    history_to_create = []
+    # ingestions_to_create removed
+    # history_to_create removed
 
     for ioc in iocs:
         ioc_type_name = ioc.ioc_type.name
@@ -382,26 +386,16 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
 
             if key not in existing_links:
                 ioc_tools_to_create.append(
-                    IocTool(ioc=ioc, tool=tool)
-                )
-
-            if key not in existing_ingestions:
-                ingestions_to_create.append(
-                    Ingestion(
-                        ioc=ioc,
+                    IocTool(
+                        ioc=ioc, 
                         tool=tool,
-                        status=Ingestion.STATUS_INGESTED,
+                        status=IocTool.STATUS_INGESTED,
                         ingested_at=now
                     )
                 )
 
-                history_to_create.append(
-                    IocHistory(
-                        ioc=ioc,
-                        action=f"Ingestado por {tool.name}",
-                        user=user
-                    )
-                )
+            # Ingestion creation removed
+            # History creation removed
 
     # 🔥 BULK WRITE
     with transaction.atomic():
@@ -410,17 +404,10 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
                 ioc_tools_to_create,
                 batch_size=1000
             )
+        
+        # Ingestions merged into IocTool (handle update if needed, but for bulk new this is fine)
+        # However, we initialized IocTool without status above in previous impl?
+        # Let's fix loop to set status
 
-        if ingestions_to_create:
-            Ingestion.objects.bulk_create(
-                ingestions_to_create,
-                batch_size=1000
-            )
-
-        if history_to_create:
-            IocHistory.objects.bulk_create(
-                history_to_create,
-                batch_size=1000
-            )
 
 

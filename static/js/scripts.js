@@ -605,36 +605,38 @@ async function cargarEstadosDesdeTxt() {
    BORRAR IOC DEPURADOS
 ----------------------------*/
 async function eliminarDepurados() {
-  if (!confirm("¿Seguro que quieres eliminar TODOS los IoCs en estado 'DEPURADO'? Esto es irreversible.")) return;
+  if (!confirm("¿Seguro que quieres eliminar TODOS los IoCs en estado 'DEPURADO'?\n\nSe descargará un reporte TXT con el detalle.\nEsta acción es irreversible y NO guardará historial en base de datos.")) return;
+
   const msgEl = document.getElementById('msgEstados') || document.getElementById('msgGestionManual') || null;
-  showMessage(msgEl, 'Creando auditoría para permitir purga...', 'ok');
+  showMessage(msgEl, 'Procesando eliminación y generando reporte...', 'ok');
 
   try {
-    const label = `Purge_by_UI_${new Date().toISOString()}`;
-    const createRes = await apiFetch('/api/audit/create/', {
+    // Llamada directa a purge (sin crear audit previo)
+    const res = await apiFetch('/api/purge/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label })
+      body: JSON.stringify({ dry_run: false })
     });
-    if (!createRes.ok) {
-      const txt = await createRes.text();
-      return showMessage(msgEl, `No se pudo crear auditoría: ${createRes.status} ${txt}`, 'err');
-    }
-    const createData = await createRes.json();
-    const audit_id = createData.audit_id;
-    showMessage(msgEl, `Auditoría creada (id=${audit_id}). Ejecutando purga...`, 'ok');
 
-    const purgeRes = await apiFetch('/api/purge/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audit_id: audit_id, dry_run: false })
-    });
-    if (!purgeRes.ok) {
-      const txt = await purgeRes.text();
-      return showMessage(msgEl, `Error al purgar: ${purgeRes.status} ${txt}`, 'err');
+    if (!res.ok) {
+      const txt = await res.text();
+      return showMessage(msgEl, `Error al purgar: ${res.status} ${txt}`, 'err');
     }
-    const purgeData = await purgeRes.json();
-    showMessage(msgEl, `Purgados: ${purgeData.purged_count || purgeData.to_delete || 0}`, 'ok');
+
+    // El backend ahora devuelve un ARCHIVO (Blob), no JSON
+    const blob = await res.blob();
+
+    // Obtener nombre del header o usar default
+    let filename = `reporte_eliminacion_${new Date().toISOString().slice(0, 10)}.txt`;
+    const disposition = res.headers.get('Content-Disposition');
+    if (disposition && disposition.indexOf('filename="') !== -1) {
+      filename = disposition.split('filename="')[1].split('"')[0];
+    }
+
+    // Descargar archivo
+    downloadBlob(filename, blob);
+
+    showMessage(msgEl, `Eliminados correctamente. Reporte descargado: ${filename}`, 'ok');
 
     if (typeof refreshIocList === 'function') refreshIocList();
   } catch (err) {

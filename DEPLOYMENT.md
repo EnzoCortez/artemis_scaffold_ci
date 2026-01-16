@@ -125,5 +125,26 @@ La aplicación correrá en puerto 8080 en segundo plano.
 </configuration>
 ```
 
-## Paso 5: Firewall
-1.  Asegúrese de abrir el puerto 80 (o 443 si usa SSL) en el **Windows Defender Firewall** para permitir el tráfico externo.
+## Paso 5: Firewall y Acceso Remoto
+
+### 5.1 Abrir Puerto 80
+Para que otros dispositivos puedan ver la página, debe permitir el tráfico HTTP en el Firewall de Windows.
+Ejecute este comando en **PowerShell (como Administrador)**:
+
+```powershell
+New-NetFirewallRule -DisplayName "Artemis Web" -Direction Inbound -LocalPort 80 -Protocol TCP -Action Allow
+```
+
+### 5.2 Conectarse desde otro dispositivo
+1.  Averigüe la dirección IP del servidor. En PowerShell ejecute:
+    ```powershell
+    ipconfig
+    ```
+    Busque la dirección IPv4 (ejemplo: `192.168.1.15` o `10.0.0.5`).
+
+2.  Desde cualquier computadora o celular conectado a la misma red, abra el navegador e ingrese:
+    `http://<DIRECCION_IP_DEL_SERVIDOR>`
+    
+    Ejemplo: `http://192.168.1.15`
+
+Si ve la pantalla de Login de Artemis, ¡todo ha sido un éxito!
