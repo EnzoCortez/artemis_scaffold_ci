@@ -1,13 +1,8 @@
-
-import os
-import sys
-
-# Add the project directory to the sys.path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
 from waitress import serve
 from artemis_project.wsgi import application
+import os
 
 if __name__ == '__main__':
-    print("Serving on http://localhost:8080")
-    serve(application, host='0.0.0.0', port=8080)
+    port = os.environ.get('PORT', '8000')
+    print(f"Serving Artemis on http://127.0.0.1:{port} using Waitress...")
+    serve(application, host='127.0.0.1', port=int(port), threads=8)

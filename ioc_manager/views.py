@@ -647,33 +647,46 @@ class PurgeApiView(APIView):
         if dry_run:
             return Response({'dry_run': True, 'to_delete': count}, status=status.HTTP_200_OK)
             
-        # 1. GENERAR REPORTE TXT (Memoria eficiente via iterator si fuera necesario, pero aquí construimos string)
+        # 1. GENERAR REPORTE TXT MEJORADO
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M:%S')
+        user_str = request.user.username
+
         lines = [
             f"REPORTE DE ELIMINACION DE IOCs (Estado DEPURADO)",
-            f"Fecha: {timezone.now()}",
-            f"Usuario: {request.user.username}",
-            "-" * 80,
-            f"{'IOC':<50} {'Tipo':<20} {'Fuente':<20}",
-            "-" * 80
+            f"===========================================================================================================",
+            f"Fecha de Ejecución: {now_str}",
+            f"Ejecutado por:      {user_str}",
+            f"===========================================================================================================",
+            f"",
+            f"{'IOC (Valor)':<68} | {'Tipo':<15} | {'Fuente':<20}",
+            f"{'-'*68}-+-{'-'*15}-+-{'-'*20}"
         ]
 
-        # Obtener datos antes de borrar
+        # Obtener datos antes de borrar (optimizando memoria)
         to_delete_qs = qs.values_list('value', 'ioc_type__name', 'source', 'id')
         
         # Guardar IDs para borrar
         ids_to_delete = []
         
         for val, itype, src, iid in to_delete_qs:
-             lines.append(f"{val:<50} {itype or 'N/A':<20} {src or 'N/A':<20}")
+             # Truncate source if too long to maintain alignment
+             src_clean = (src or 'N/A')[:20]
+             itype_clean = (itype or 'N/A')[:15]
+             # Usar relleno de puntos (.) para guiar la vista en valores cortos
+             lines.append(f"{val:.<68} | {itype_clean:<15} | {src_clean:<20}")
              ids_to_delete.append(iid)
 
         total_purged = len(ids_to_delete)
-        lines.append("-" * 80)
-        lines.append(f"Total eliminados: {total_purged}")
+        
+        lines.append(f"{'-'*68}-+-{'-'*15}-+-{'-'*20}")
+        lines.append(f"Total registros eliminados: {total_purged}")
+        lines.append(f"")
+        lines.append(f"*** FIN DEL REPORTE ***")
+        lines.append(f"Nota: Este archivo es un registro estático generado por el sistema Artemis.")
 
         # 2. BORRAR (Sin crear historial en DB)
         if ids_to_delete:
-             # Borrar en lotes para evitar bloqueo excesivo si son miles
+             # Borrar en lotes
              batch_size = 1000
              for i in range(0, len(ids_to_delete), batch_size):
                  chunk = ids_to_delete[i:i + batch_size]

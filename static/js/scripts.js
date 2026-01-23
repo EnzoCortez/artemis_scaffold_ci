@@ -21,14 +21,34 @@ window.originalFilename = 'iocs';
   Helpers: CSRF + fetch wrapper
 ----------------------------*/
 function downloadBlob(blob, filename) {
+  // Sanitize filename to prevent attribute injection
+  // Ensure we have a string
+  const name = String(filename || 'download');
+  // Allow only safe characters: alphanumeric, dots, underscores, hyphens
+  const safeFilename = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+  if (window.navigator && window.navigator.msSaveOrOpenBlob) {
+    window.navigator.msSaveOrOpenBlob(blob, safeFilename);
+    return;
+  }
+
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
+  a.style.display = 'none';
   a.href = url;
-  a.download = filename;
+
+  // Use property assignment (safer than setAttribute for XSS context)
+  a.download = safeFilename;
+
+  // Safe append
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  window.URL.revokeObjectURL(url);
+
+  // Cleanup
+  setTimeout(() => {
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  }, 100);
 }
 
 function getCookie(name) {
@@ -74,16 +94,7 @@ function showMessage(elOrId, text, kind = 'ok') {
   setTimeout(() => { try { el.style.display = 'none'; } catch (e) { } }, 8000);
 }
 
-function downloadBlob(filename, blob) {
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(url);
-}
+// Duplicate downloadBlob removed
 
 /* ---------------------------
   Detección de tipo de IOC (JS)
@@ -367,7 +378,7 @@ async function cargarNuevos() {
         const r1 = await apiFetch(`/api/export/ingested-by-batch/${encodeURIComponent(batch)}/`);
         if (r1.ok) {
           const blob = await r1.blob();
-          downloadBlob(`iocs_ingestados_${batch}.zip`, blob);
+          downloadBlob(blob, `iocs_ingestados_${batch}.zip`);
         } else {
           const txt = await r1.text();
           console.warn('No se pudo descargar ingestados:', r1.status, txt);
@@ -462,7 +473,7 @@ async function downloadClassifiedZip(items, title) {
     }
 
     const blob = await res.blob();
-    downloadBlob(`${title}_classified.zip`, blob);
+    downloadBlob(blob, `${title}_classified.zip`);
 
   } catch (e) {
     console.error(e);
@@ -504,8 +515,26 @@ async function buscarManual() {
       const tipo = detectarTipoIoc(value);
 
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${value}</td><td>${tipo}</td><td>${status}</td>
-        <td><button type="button" onclick="promptChangeState(${JSON.stringify(id)})">Cambiar</button></td>`;
+
+      const tdValue = document.createElement('td');
+      tdValue.textContent = value;
+      tr.appendChild(tdValue);
+
+      const tdType = document.createElement('td');
+      tdType.textContent = tipo;
+      tr.appendChild(tdType);
+
+      const tdStatus = document.createElement('td');
+      tdStatus.textContent = status;
+      tr.appendChild(tdStatus);
+
+      const tdAction = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.textContent = 'Cambiar';
+      btn.onclick = function () { promptChangeState(id); }; // Safe closure
+      tdAction.appendChild(btn);
+      tr.appendChild(tdAction);
+
       tbody.appendChild(tr);
     });
 
@@ -634,7 +663,7 @@ async function eliminarDepurados() {
     }
 
     // Descargar archivo
-    downloadBlob(filename, blob);
+    downloadBlob(blob, filename);
 
     showMessage(msgEl, `Eliminados correctamente. Reporte descargado: ${filename}`, 'ok');
 
@@ -666,12 +695,26 @@ async function refreshIocList() {
       const status = ioc.status || ioc.estado || '';
 
       const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${value}</td>
-        <td>${type}</td>
-        <td>${status}</td>
-        <td><button onclick="promptChangeState(${JSON.stringify(id)})">Cambiar</button></td>
-      `;
+
+      const tdValue = document.createElement('td');
+      tdValue.textContent = value;
+      tr.appendChild(tdValue);
+
+      const tdType = document.createElement('td');
+      tdType.textContent = type;
+      tr.appendChild(tdType);
+
+      const tdStatus = document.createElement('td');
+      tdStatus.textContent = status;
+      tr.appendChild(tdStatus);
+
+      const tdAction = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.textContent = 'Cambiar';
+      btn.onclick = function () { promptChangeState(id); };
+      tdAction.appendChild(btn);
+      tr.appendChild(tdAction);
+
       tbody.appendChild(tr);
     });
   } catch (err) {
@@ -715,7 +758,7 @@ async function generarReporte() {
     const blob = await res.blob();
     // nombre de archivo sugerido
     const filename = `reporte_artemis_${tipo}_${inicio.replace(/-/g, '')}_${fin.replace(/-/g, '')}.txt`;
-    downloadBlob(filename, blob);
+    downloadBlob(blob, filename);
     showMessage(msgEl, 'Reporte generado y descargado.', 'ok');
   } catch (err) {
     console.error('Error generando reporte', err);
@@ -723,27 +766,7 @@ async function generarReporte() {
   }
 }
 
-function downloadBlob(filename, data) {
-  if (!(data instanceof Blob)) {
-    console.error('downloadBlob recibió algo que no es Blob:', data);
-    alert('No se pudo generar el archivo TXT.');
-    return;
-  }
-
-  if (data.size === 0) {
-    alert('El archivo TXT está vacío.');
-    return;
-  }
-
-  const url = window.URL.createObjectURL(data);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  window.URL.revokeObjectURL(url);
-}
+// Duplicate downloadBlob removed
 
 async function apiFetch(url, options = {}) {
   const opts = {

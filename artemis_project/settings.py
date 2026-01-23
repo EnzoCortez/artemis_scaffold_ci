@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'changeme')
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -42,14 +42,44 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = 'artemis_project.wsgi.application'
 
-# settings.py 
+
+# settings.py
+import base64
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM # Option 3: AES-GCM
+
+# Database Decryption Logic (AES-GCM Mode)
+try:
+    _db_key_b64 = os.environ.get('DB_ENCRYPTION_KEY')
+    _db_payload_b64 = os.environ.get('DB_PASSWORD')
+    
+    if _db_key_b64 and _db_payload_b64:
+        # 1. Decode Base64
+        _key = base64.b64decode(_db_key_b64)
+        _payload = base64.b64decode(_db_payload_b64)
+        
+        # 2. Extract Nonce (First 12 bytes for GCM)
+        _nonce = _payload[:12]
+        _ciphertext = _payload[12:]
+        
+        # 3. Decrypt
+        aesgcm = AESGCM(_key)
+        # AESGCM.decrypt validates the tag automatically (included in ciphertext end)
+        _decrypted_pwd = aesgcm.decrypt(_nonce, _ciphertext, associated_data=None).decode('utf-8')
+    else:
+        # _decrypted_pwd = os.environ.get('DB_PASSWORD_RAW') # Fallback commented out for production safety
+        _decrypted_pwd = None
+except Exception as e:
+    print(f"CRITICAL SECURITY ERROR: Could not decrypt database password (AES-GCM): {e}")
+    _decrypted_pwd = None
+
 DATABASES = {
     'default': {
         'ENGINE': 'mssql',
-        'NAME': 'artemis_db',
-        'USER': 'artemis_user',
-        'PASSWORD': 'PasswordSegura123!',
-        'HOST': 'ENZO\\SQLEXPRESS',
+        'NAME': os.environ.get('DB_NAME', 'Artemis_db'),
+        'USER': os.environ.get('DB_USER', 'Artemis'),
+        'PASSWORD': _decrypted_pwd,
+        'HOST': os.environ.get('DB_HOST', 'DBSRV7'),
+        'PORT': os.environ.get('DB_PORT', ''),
         'OPTIONS': {
             'driver': 'ODBC Driver 17 for SQL Server',
         },
