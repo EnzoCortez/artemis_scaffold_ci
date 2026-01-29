@@ -42,10 +42,17 @@ def generate_credentials():
     print(f"\n[3] Password Encriptado (Guardar en DB_PASSWORD_ENCRYPTED):")
     print(f"{payload_pwd}")
     
+    # 4. Generar DJANGO_SECRET_KEY
+    import secrets
+    secret_key = secrets.token_urlsafe(50)
+    print(f"\n[4] DJANGO_SECRET_KEY (Cifrado Criptográfico Estándar):")
+    print(f"{secret_key}")
+
     print("\n--- Instrucciones ---")
     print("1. Copie el valor [1] en su archivo .env como DB_ENCRYPTION_KEY")
     print("2. Copie el valor [2] en su archivo .env como DB_USER_ENCRYPTED")
     print("3. Copie el valor [3] en su archivo .env como DB_PASSWORD_ENCRYPTED")
+    print("4. Copie el valor [4] en su archivo .env como DJANGO_SECRET_KEY")
     print("3. BORRE ESTE SCRIPT o el historial de su terminal después de usarlo.")
 
 if __name__ == "__main__":
