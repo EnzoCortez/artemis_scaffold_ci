@@ -58,34 +58,35 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM # Option 3: AES-G
 # Database Decryption Logic (AES-GCM Mode)
 try:
     _db_key_b64 = os.environ.get('DB_ENCRYPTION_KEY')
-    _db_payload_b64 = os.environ.get('DB_PASSWORD')
+    _db_user_payload_b64 = os.environ.get('DB_USER_ENCRYPTED')
+    _db_pwd_payload_b64 = os.environ.get('DB_PASSWORD_ENCRYPTED')
     
-    if _db_key_b64 and _db_payload_b64:
-        # 1. Decode Base64
-        _key = base64.b64decode(_db_key_b64)
-        _payload = base64.b64decode(_db_payload_b64)
-        
-        # 2. Extract Nonce (First 12 bytes for GCM)
-        _nonce = _payload[:12]
-        _ciphertext = _payload[12:]
-        
-        # 3. Decrypt
-        aesgcm = AESGCM(_key)
-        # AESGCM.decrypt validates the tag automatically (included in ciphertext end)
-        _decrypted_pwd = aesgcm.decrypt(_nonce, _ciphertext, associated_data=None).decode('utf-8')
-    else:
-        # _decrypted_pwd = os.environ.get('DB_PASSWORD_RAW') # Fallback commented out for production safety
-        _decrypted_pwd = None
-except Exception as e:
-    print(f"CRITICAL SECURITY ERROR: Could not decrypt database password (AES-GCM): {e}")
+    _decrypted_user = None
     _decrypted_pwd = None
+
+    if _db_key_b64:
+        _key = base64.b64decode(_db_key_b64)
+        aesgcm = AESGCM(_key)
+
+        # Decrypt User
+        if _db_user_payload_b64:
+            _payload_u = base64.b64decode(_db_user_payload_b64)
+            _decrypted_user = aesgcm.decrypt(_payload_u[:12], _payload_u[12:], associated_data=None).decode('utf-8')
+        
+        # Decrypt Password
+        if _db_pwd_payload_b64:
+            _payload_p = base64.b64decode(_db_pwd_payload_b64)
+            _decrypted_pwd = aesgcm.decrypt(_payload_p[:12], _payload_p[12:], associated_data=None).decode('utf-8')
+
+except Exception as e:
+    print(f"CRITICAL SECURITY ERROR: Could not decrypt database credentials (AES-GCM): {e}")
 
 DATABASES = {
     'default': {
         'ENGINE': 'mssql',
         'NAME': os.environ.get('DB_NAME', 'Artemis_db'),
-        'USER': os.environ.get('DB_USER', 'Artemis'),
-        'PASSWORD': _decrypted_pwd,
+        'USER': _decrypted_user or os.environ.get('DB_USER', 'Artemis'), 
+        'PASSWORD': _decrypted_pwd or os.environ.get('DB_PASSWORD_RAW'),
         'HOST': os.environ.get('DB_HOST', 'DBSRV7'),
         'PORT': os.environ.get('DB_PORT', ''),
         'OPTIONS': {
@@ -93,6 +94,14 @@ DATABASES = {
         },
     }
 }
+
+# Password Validation
+AUTH_PASSWORD_VALIDATORS = [
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator', 'OPTIONS': {'min_length': 12}},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+]
 
 
 STATIC_URL = '/static/'

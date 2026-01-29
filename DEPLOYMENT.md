@@ -55,22 +55,37 @@ Antes de comenzar, asegúrese de descargar e instalar los siguientes componentes
     pip install waitress
     ```
 
-4.  **Configurar base de datos**:
-    *   Cree un archivo `.env` en la raíz (si no existe) basado en sus credenciales de SQL Server.
-    *   Ejemplo:
+4.  **Configurar base de datos y credenciales seguras (AES-GCM)**:
+    *   **NO** cree el archivo `.env` manualmente con contraseñas en texto plano.
+    *   Ejecute el script de generación de credenciales:
+        ```powershell
+        python setup_aes_gcm.py
+        ```
+    *   El script le solicitará el **Usuario** y la **Contraseña** de la base de datos.
+    *   Copie los valores generados (que se mostrarán en pantalla) a un nuevo archivo `.env` en la raíz:
         ```ini
         DEBUG=False
         ALLOWED_HOSTS=*
         DB_ENGINE=mssql
         DB_NAME=artemis_prod
-        DB_USER=sa
-        DB_PASS=SuContraseña
-        DB_HOST=LOCALHOST\SQLEXPRESS
+        DB_HOST=DBSRV7
+        
+        # Credenciales Cifradas (Generadas por setup_aes_gcm.py)
+        DB_ENCRYPTION_KEY=...
+        DB_USER_ENCRYPTED=...
+        DB_PASSWORD_ENCRYPTED=...
         ```
 
-5.  **Recopilar estáticos**:
+5.  **Inicialización y Superusuario**:
     ```powershell
+    # 1. Aplicar migraciones
+    python manage.py migrate
+
+    # 2. Recolectar estáticos
     python manage.py collectstatic --noinput
+
+    # 3. Crear Superusuario Local (Política de Admin Único)
+    python manage.py createsuperuser --username=admin_local
     ```
 
 ---
