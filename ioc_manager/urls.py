@@ -13,14 +13,19 @@ from .views import (
     PurgeApiView, 
     BulkChangeStateView, 
     GenerarReporteView, 
+    ReportesTotalesHerramientasView,
+    ReportesAnalisisTxtView,
     IocBulkSearchView, 
     ValidateAndIngestView, 
     ExportIngestedByBatchView, 
     ChangeIocStateView,
     ExportClassifiedView,
     logout_view, 
+    logout_view, 
     login_view,
 )
+from .views_maintenance import DBLogSizeView, DBLogShrinkView, DashboardStatsView
+from .views_tool_load import ValidateToolInitialLoadView, ExecuteToolInitialLoadView
 
 urlpatterns = [
     # Auth
@@ -39,6 +44,10 @@ urlpatterns = [
     path('api/export/not-ingested/', ExportNotIngestedTxtView.as_view(), name='export_not_ingested'),
     path('api/export/classified/', ExportClassifiedView.as_view(), name='export_classified'),
     
+    # Tool specific load
+    path('api/tool-initial-load/validate/', ValidateToolInitialLoadView.as_view(), name='validate_tool_load'),
+    path('api/tool-initial-load/execute/', ExecuteToolInitialLoadView.as_view(), name='execute_tool_load'),
+    
     # Audit/Purge
     # path('api/audit/create/': AuditCreateView removed)
     path('api/purge/', PurgeApiView.as_view(), name='purge_api'),
@@ -47,6 +56,8 @@ urlpatterns = [
     path('iocs/bulk_change_state/', BulkChangeStateView.as_view(), name='bulk_change_state'),
     
     path('api/reportes/', GenerarReporteView.as_view(), name='api_reportes'),
+    path('api/reportes/totales-herramientas/', ReportesTotalesHerramientasView.as_view()),
+    path('api/reportes/analisis-txt/', ReportesAnalisisTxtView.as_view()),
     path("api/iocs/bulk-search/", IocBulkSearchView.as_view()),
     path('api/iocs/validate-ingest/', ValidateAndIngestView.as_view()),
     
@@ -55,5 +66,11 @@ urlpatterns = [
     path('api/change-state/', ChangeIocStateView.as_view(), name='change_state_payload'),
     path('api/purge/<int:pk>/', PurgeApiView.as_view(), name='purge_api_single'),
     
+    
     path('export/ingested-by-batch/<str:batch_id>/', ExportIngestedByBatchView.as_view()),
+    
+    # Maintenance & Stats
+    path('api/stats/dashboard/', DashboardStatsView.as_view(), name='dashboard_stats'),
+    path('api/maintenance/db-log-size/', DBLogSizeView.as_view(), name='db_log_size'),
+    path('api/maintenance/db-log-shrink/', DBLogShrinkView.as_view(), name='db_log_shrink'),
 ]

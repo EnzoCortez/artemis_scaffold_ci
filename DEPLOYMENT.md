@@ -95,7 +95,7 @@ Antes de comenzar, asegúrese de descargar e instalar los siguientes componentes
 
 ## Paso 3: Configurar el Servicio de Windows (usando WinSW)
 
-La aplicación correrá en puerto 8080 en segundo plano.
+La aplicación correrá en puerto 8090 en segundo plano.
 
 1.  Mueva el archivo `WinSW-x64.exe` descargado a la carpeta del proyecto: `C:\inetpub\wwwroot\Artemis`.
 2.  Renómbrelo a **`ArtemisService.exe`**.
@@ -113,7 +113,7 @@ La aplicación correrá en puerto 8080 en segundo plano.
     .\ArtemisService.exe start
     ```
     
-    *Verifique en navegador que `http://localhost:8080` responde.*
+    *Verifique en navegador que `http://localhost:8090` responde.*
     *Para ver logs, revise los archivos `.log` que se crearán en la misma carpeta.*
 
 ---
@@ -124,7 +124,7 @@ La aplicación correrá en puerto 8080 en segundo plano.
     *   **Site Name**: Artemis
     *   **Physical Path**: `C:\inetpub\wwwroot\Artemis`
     *   **Binding**: Port 80.
-2.  Asegúrese de que el archivo `web.config` incluido en el proyecto esté en la carpeta raíz. Este archivo le dice a IIS que reenvíe todo a `http://localhost:8080`.
+2.  Asegúrese de que el archivo `web.config` incluido en el proyecto esté en la carpeta raíz. Este archivo le dice a IIS que reenvíe todo a `http://localhost:8090`.
 
 **Referencia de web.config:**
 ```xml
@@ -135,7 +135,7 @@ La aplicación correrá en puerto 8080 en segundo plano.
             <rules>
                 <rule name="ReverseProxyToWaitress" stopProcessing="true">
                     <match url="(.*)" />
-                    <action type="Rewrite" url="http://localhost:8080/{R:1}" />
+                    <action type="Rewrite" url="http://localhost:8090/{R:1}" />
                 </rule>
             </rules>
         </rewrite>
@@ -166,3 +166,39 @@ New-NetFirewallRule -DisplayName "Artemis Web" -Direction Inbound -LocalPort 80 
     Ejemplo: `http://192.168.1.15`
 
 Si ve la pantalla de Login de Artemis, ¡todo ha sido un éxito!
+
+---
+
+## 6. Mantenimiento y Ciclo de Vida
+
+### 6.1 Garantía de Disponibilidad (Auto-Restart)
+El servicio **ArtemisService** está configurado para operar como un servicio crítico de Windows. 
+*   **Inicio Automático:** Se inicia con el sistema operativo sin necesidad de logueo de usuario.
+*   **Restaura ante Fallos:** Si la aplicación crashea, el wrapper (WinSW) intentará reiniciarla automáticamente tras 10 segundos, y nuevamente tras 20 segundos si falla de nuevo.
+*   **Logs:** Cualquier error de arranque o crash quedará registrado en `ArtemisService.out.log` y `ArtemisService.err.log` en el directorio raíz.
+
+### 6.2 Actualización de Dependencias (Modo Offline)
+Dado que el servidor NO tiene internet, las actualizaciones de librerías Python deben seguir este flujo estricto:
+
+1.  **En Equipo con Internet:**
+    Descargar los paquetes (`wheels`) y sus dependencias:
+    ```powershell
+    # Ejemplo: Actualizar Django
+    mkdir offline_packages
+    pip download Django==5.2.11 -d offline_packages
+    ```
+2.  **Escaneo de Seguridad:**
+    Analizar la carpeta `offline_packages` con antivirus corporativo antes de moverla.
+3.  **Transferencia:**
+    Copiar la carpeta `offline_packages` al servidor (`C:\inetpub\wwwroot\Artemis\packages`).
+4.  **Instalación Offline:**
+    ```powershell
+    cd C:\inetpub\wwwroot\Artemis
+    .\venv\Scripts\activate
+    pip install --no-index --find-links=./packages Django
+    ```
+5.  **Reinicio de Servicio:**
+    Para aplicar cambios:
+    ```powershell
+    .\ArtemisService.exe restart
+    ```

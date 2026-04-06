@@ -19,6 +19,7 @@ INSTALLED_APPS = [
     'ioc_manager.apps.IocManagerConfig',
 ]
 MIDDLEWARE = [
+    'artemis_project.middleware.AntiParameterPollutionMiddleware',
     'django.middleware.security.SecurityMiddleware',
     "whitenoise.middleware.WhiteNoiseMiddleware", # Added whitenoise
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -49,6 +50,14 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+CSRF_TRUSTED_ORIGINS = [
+    'http://localhost',
+    'http://127.0.0.1:8000',
+    'http://10.100.176.74',
+    'https://10.100.176.74',
+    'http://10.100.176.74:443', # Fix for specific error seen
+]
 
 
 # settings.py
@@ -120,6 +129,15 @@ LOGGING = {
     'handlers': {'console': {'class': 'logging.StreamHandler'},},
     'root': {'handlers': ['console'], 'level': 'INFO'},
 }
-REST_FRAMEWORK = {'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],}
+REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
+    'DEFAULT_RENDERER_CLASSES': (
+        'rest_framework.renderers.JSONRenderer',
+    )
+}
+
+# Configuración de Zona Horaria (Ecuador)
+TIME_ZONE = 'America/Guayaquil'
+USE_TZ = True
 
 

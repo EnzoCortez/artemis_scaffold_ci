@@ -22,7 +22,7 @@ from rest_framework import status, permissions
 from rest_framework import serializers as drf_serializers
 
 from ioc_manager.services.ingestion_service import validate_and_ingest
-from .utils import associate_iocs_with_allowed_tools_bulk, detect_ioc_type
+from .utils import associate_iocs_with_allowed_tools_bulk, detect_ioc_type, validate_tool_accepts_ioc
 from .models import (
     IocEntry,
     IocType,
@@ -53,7 +53,8 @@ class IndexView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def get(self, request):
-        return render(request, 'ioc_manager/index.html')
+        tools = Tool.objects.all().order_by('name')
+        return render(request, 'ioc_manager/index.html', {'tools': tools})
 
 
 class ValidateUploadView(APIView):
@@ -116,8 +117,20 @@ class ValidateUploadView(APIView):
         duplicates = []
         new_items = []
 
+        # Cargar herramientas disponibles para validar reglas
+        all_tool_names = list(Tool.objects.values_list('name', flat=True))
+
         # 5️⃣ Clasificación final
         for value in clean_values:
+            try:
+                detected = detect_ioc_type(value)
+            except Exception:
+                detected = ''
+
+            if not detected:
+                skipped.append({'line': value, 'reason': 'No pudo detectar tipo (formato no soportado)'})
+                continue
+                
             if value in existing_map:
                 ioc = existing_map[value]
                 duplicates.append({
@@ -126,10 +139,17 @@ class ValidateUploadView(APIView):
                     'tools': tools_map.get(ioc.id, [])
                 })
             else:
-                try:
-                    detected = detect_ioc_type(value)
-                except Exception:
-                    detected = ''
+                # 🔒 VALIDACIÓN ESTRICTA: ¿Alguna herramienta soporta este IOC?
+                supported_by_any = False
+                for t_name in all_tool_names:
+                    is_valid, _ = validate_tool_accepts_ioc(t_name, value)
+                    if is_valid:
+                        supported_by_any = True
+                        break
+                
+                if not supported_by_any:
+                    skipped.append({'line': value, 'reason': f'No soportado por ninguna herramienta ({detected})'})
+                    continue
 
                 new_items.append({
                     'value': value,
@@ -345,13 +365,7 @@ class IocListView(APIView):
         qs = (
             IocEntry.objects
             .select_related("ioc_type")
-            .only(
-                "id",
-                "value",
-                "status",
-                "created_at",
-                "ioc_type__name"
-            )
+            .prefetch_related("tools")
             .order_by("-created_at")
         )
 
@@ -1055,3 +1069,117 @@ def logout_view(request):
 
 
 
+
+
+# ==========================================================
+# REPORT VIEWS ENHANCEMENTS (TICKET 7 & TXT ANALISIS)
+# ==========================================================
+from django.db.models import Count
+
+class ReportesTotalesHerramientasView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Q
+        from datetime import datetime
+        
+        date_start = request.query_params.get("date_start")
+        date_end = request.query_params.get("date_end")
+
+        ioc_filter = Q()
+        
+        if date_start:
+            try:
+                dt_start = datetime.strptime(date_start, "%Y-%m-%d")
+                current_tz = timezone.get_current_timezone()
+                dt_start = timezone.make_aware(datetime.combine(dt_start, datetime.min.time()), current_tz)
+                ioc_filter &= Q(iocs__ioc__created_at__gte=dt_start)
+            except ValueError:
+                pass
+
+        if date_end:
+            try:
+                dt_end = datetime.strptime(date_end, "%Y-%m-%d")
+                current_tz = timezone.get_current_timezone()
+                dt_end = timezone.make_aware(datetime.combine(dt_end, datetime.max.time()), current_tz)
+                ioc_filter &= Q(iocs__ioc__created_at__lte=dt_end)
+            except ValueError:
+                pass
+
+        tools = Tool.objects.annotate(ioc_count=Count('iocs', filter=ioc_filter)).order_by('-ioc_count')
+        
+        # Build text report
+        lines = []
+        lines.append("="*50)
+        lines.append(" REPORTE TOTALES POR HERRAMIENTA")
+        if date_start or date_end:
+            lines.append(f" Rango: {date_start or 'Ilimitado'} al {date_end or 'Presente'}")
+        lines.append("="*50)
+        lines.append("")
+        
+        for tool in tools:
+            lines.append(f" Herramienta: {tool.name}")
+            lines.append(f" Total Indicadores: {tool.ioc_count}")
+            lines.append("-" * 50)
+            
+        content = "\n".join(lines)
+        response = HttpResponse(content, content_type='text/plain')
+        response['Content-Disposition'] = 'attachment; filename="reporte_totales_herramientas.txt"'
+        return response
+
+class ReportesAnalisisTxtView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            return Response({'error': 'No file provided'}, status=400)
+            
+        try:
+            raw = file_obj.read()
+            text = raw.decode('utf-8', errors='ignore')
+        except Exception:
+            return Response({'error': 'Invalid file encoding'}, status=400)
+            
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        
+        existing = IocEntry.objects.filter(value__in=lines).select_related('ioc_type').prefetch_related('tools')
+        existing_map = {ioc.value.lower(): ioc for ioc in existing}
+        
+        out_lines = []
+        out_lines.append("=" * 60)
+        out_lines.append(" REPORTE DE ANALISIS DE INDICADORES CARGADOS")
+        out_lines.append("=" * 60)
+        out_lines.append(f"Total procesados en TXT: {len(lines)}\n")
+        
+        found_count = 0
+        not_found_count = 0
+        
+        for idx, line in enumerate(lines, 1):
+            val_lower = line.lower()
+            if val_lower in existing_map:
+                ioc = existing_map[val_lower]
+                tool_names = [t.tool.name for t in ioc.tools.all() if t.tool]
+                tools_str = ", ".join(tool_names) if tool_names else "Ninguna"
+                tipo = ioc.ioc_type.name if ioc.ioc_type else "Desconocido"
+                try:
+                    date_str = timezone.localtime(ioc.created_at).strftime('%Y-%m-%d %H:%M') if ioc.created_at else 'Desconocida'
+                except Exception:
+                    date_str = str(ioc.created_at)
+
+                out_lines.append(f"{idx}. {line} -> INGESTADO")
+                out_lines.append(f"   Tipo: {tipo} | Estado: {ioc.status} | Fecha: {date_str}")
+                out_lines.append(f"   Herramientas: {tools_str}\n")
+                found_count += 1
+            else:
+                out_lines.append(f"{idx}. {line} -> NO INGESTADO\n")
+                not_found_count += 1
+                
+        out_lines.insert(3, f"Encontrados (Ingestados): {found_count}")
+        out_lines.insert(4, f"No encontrados: {not_found_count}")
+        out_lines.insert(5, "-" * 60 + "\n")
+        
+        content = "\n".join(out_lines)
+        response = HttpResponse(content, content_type='text/plain')
+        response['Content-Disposition'] = 'attachment; filename="reporte_analisis_txt.txt"'
+        return response

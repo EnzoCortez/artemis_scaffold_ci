@@ -251,6 +251,7 @@ async function validarCarga() {
 
     const duplicatesRaw = data.duplicates || [];
     const newRaw = data.new || [];
+    const skippedRaw = data.skipped || [];
     const fuente = finalFuente; // Usar la variable local correcta
 
     const duplicates = duplicatesRaw.map(d => ({
@@ -263,6 +264,11 @@ async function validarCarga() {
     const newItems = newRaw.map(n => ({
       value: n.value || n,
       detected_type: n.detected_type || ''
+    }));
+
+    const skippedItems = skippedRaw.map(s => ({
+      value: `${s.line || s.value || s} - ${s.reason || 'Inválido'}`,
+      detected_type: 'Error/Inválido'
     }));
 
     window.estadoCarga.duplicados = duplicates.map(d => d.value);
@@ -300,9 +306,15 @@ async function validarCarga() {
       { showType: true }
     );
 
+    renderListIntoUL(
+      document.getElementById('listaErrores'),
+      skippedItems,
+      { showType: true }
+    );
+
     showMessage(
       msgEl,
-      `Proceso completado. IoCs nuevos: ${newItems.length}, Duplicados: ${duplicates.length}`,
+      `Proceso completado. Nuevos: ${newItems.length}, Duplicados: ${duplicates.length}, Rechazados: ${skippedItems.length}`,
       'ok'
     );
 
@@ -388,8 +400,26 @@ async function cargarNuevos() {
       }
     }
 
-    // Descargar TXT de duplicados (si existen)
+    // Auto-descargar ZIPs de depuración (Duplicados y Nuevos)
+    try {
+      if (window.iocsDuplicados && window.iocsDuplicados.length > 0) {
+        const dupItems = window.iocsDuplicados.map(d => ({
+          value: d.value,
+          detected_type: d.detected_type || 'Desconocido'
+        }));
+        await downloadClassifiedZip(dupItems, (window.originalFilename || 'iocs') + '_duplicados');
+      }
 
+      if (window.estadoCarga && window.estadoCarga.nuevos && window.estadoCarga.nuevos.length > 0) {
+        const nuevosItems = window.estadoCarga.nuevos.map(val => ({
+          value: val,
+          detected_type: (typeof detectarTipoIoc === 'function') ? detectarTipoIoc(val) : 'Desconocido'
+        }));
+        await downloadClassifiedZip(nuevosItems, (window.originalFilename || 'iocs') + '_nuevos');
+      }
+    } catch (autoErr) {
+      console.warn("Error en auto-descargas de depuración:", autoErr);
+    }
 
     // Mostrar algunos errores si existen
     if (errors && errors.length) {
@@ -411,6 +441,127 @@ async function cargarNuevos() {
   } catch (err) {
     console.error(err);
     showMessage(msgEl, 'Error de conexión al insertar: ' + (err.message || err), 'err');
+  }
+}
+
+/* ---------------------------
+  MÓDULO: CARGA INICIAL POR HERRAMIENTA
+----------------------------*/
+async function validarCargaHerramienta() {
+  const fileInput = document.getElementById('fileCargaInit');
+  const toolSelect = document.getElementById('herramientaSelectInit');
+  const msgEl = document.getElementById('msgCargaInit');
+
+  if (!fileInput || !fileInput.files.length) {
+    return showMessage(msgEl, 'Selecciona un archivo TXT.', 'warn');
+  }
+  if (!toolSelect || !toolSelect.value) {
+    return showMessage(msgEl, 'Selecciona una Herramienta de destino.', 'warn');
+  }
+
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('tool_id', toolSelect.value);
+
+  showMessage(msgEl, 'Validando reglas y cruzando datos con base...', 'ok');
+
+  try {
+    const res = await apiFetch('/api/tool-initial-load/validate/', {
+      method: 'POST',
+      body: fd
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      return showMessage(msgEl, `Error validación: ${res.status} ${txt}`, 'err');
+    }
+
+    const data = await res.json();
+    
+    // Almacenar respuesta en variable global para ejecución posterior
+    window.toolInitialLoadData = {
+      brand_new: data.brand_new || [],
+      new_for_tool: data.new_for_tool || [],
+      tool_id: toolSelect.value
+    };
+
+    document.getElementById('resultadosCargaInit').style.display = 'block';
+
+    renderListIntoUL(
+      document.getElementById('listaBrandNew'),
+      data.brand_new,
+      { showType: true }
+    );
+    
+    renderListIntoUL(
+      document.getElementById('listaNewForTool'),
+      data.new_for_tool,
+      { showType: true }
+    );
+    
+    renderListIntoUL(
+      document.getElementById('listaAlreadyLinked'),
+      data.already_linked,
+      { showType: true }
+    );
+
+    const skippedForUI = (data.skipped || []).map(s => ({
+      value: `${s.line || s.value || s} - ${s.reason || 'Inválido'}`,
+      detected_type: 'Rechazado'
+    }));
+
+    renderListIntoUL(
+      document.getElementById('listaErroresInit'),
+      skippedForUI,
+      { showType: true }
+    );
+
+    const readyToLoad = (data.brand_new?.length || 0) + (data.new_for_tool?.length || 0);
+    if (readyToLoad === 0) {
+      showMessage(msgEl, 'No hay IoCs válidos para reasignar a esta herramienta.', 'warn');
+    } else {
+      showMessage(msgEl, `Cruce completo. ${readyToLoad} IoCs pendientes de enviar a la herramienta seleccionada.`, 'ok');
+    }
+  } catch (err) {
+    console.error(err);
+    showMessage(msgEl, 'Error de conexión: ' + (err.message || err), 'err');
+  }
+}
+
+async function ejecutarCargaHerramienta() {
+  const msgEl = document.getElementById('msgCargaInit');
+  const context = window.toolInitialLoadData;
+  
+  if (!context || (!context.brand_new.length && !context.new_for_tool.length)) {
+    return showMessage(msgEl, 'No hay datos listos para enviar. Valide primero la carga.', 'warn');
+  }
+
+  showMessage(msgEl, `Insertando/Reasignando IoCs hacia la herramienta seleccionada...`, 'ok');
+
+  try {
+    const res = await apiFetch('/api/tool-initial-load/execute/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(context)
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      return showMessage(msgEl, `Error al enlazar herramientas: ${res.status} ${txt}`, 'err');
+    }
+
+    const data = await res.json();
+    showMessage(msgEl, `${data.detail} Creados: ${data.created_iocs}, Asignados: ${data.linked_to_tool}.`, 'ok');
+
+    // Limpiar caché y listas
+    window.toolInitialLoadData = null;
+    document.getElementById('listaBrandNew').innerHTML = '';
+    document.getElementById('listaNewForTool').innerHTML = '';
+    
+    if (typeof refreshIocList === 'function') refreshIocList();
+  } catch (err) {
+    console.error(err);
+    showMessage(msgEl, 'Error de conexión al reasignar: ' + (err.message || err), 'err');
   }
 }
 

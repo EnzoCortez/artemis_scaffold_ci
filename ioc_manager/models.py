@@ -10,7 +10,7 @@ class IocType(models.Model):
     description = models.TextField(null=True, blank=True)
 
     class Meta:
-        db_table = 'artemis_db.ioc_type'
+
         verbose_name = "Tipo de IOC"
         verbose_name_plural = "Tipos de IOC"
         ordering = ("name",)
@@ -26,7 +26,7 @@ class Tool(models.Model):
     vendor = models.CharField(max_length=100, null=True, blank=True) # Consolidated from Firewall
 
     class Meta:
-        db_table = 'artemis_db.tool'
+
         verbose_name = "Herramienta"
         verbose_name_plural = "Herramientas"
         ordering = ("name",)
@@ -45,7 +45,7 @@ class ToolIndicatorRule(models.Model):
     can_ingest = models.BooleanField(default=True)
 
     class Meta:
-        db_table = 'artemis_db.tool_indicator_rule'
+
         unique_together = ("tool", "ioc_type")
         verbose_name = "Regla herramienta-indicador"
         verbose_name_plural = "Reglas herramienta-indicador"
@@ -60,7 +60,7 @@ class ToolHashType(models.Model):
     algorithm = models.CharField(max_length=20)
 
     class Meta:
-        db_table = 'artemis_db.tool_hash_type'
+
         unique_together = ('tool', 'ioc_type', 'algorithm')
         verbose_name = "Algoritmo de hash por herramienta"
 
@@ -91,7 +91,7 @@ class IocEntry(models.Model):
     upload_batch = models.CharField(max_length=36, null=True, blank=True, db_index=True)
 
     class Meta:
-        db_table = 'artemis_db.ioc_entry'
+
         unique_together = ('ioc_type', 'value') # Mantener value por ahora, luego migrar a value_hash
         indexes = [
             models.Index(fields=['ioc_type', 'value_hash']), # Index optimizado
@@ -127,7 +127,7 @@ class IocTool(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'artemis_db.ioc_tool'
+
         unique_together = ('ioc', 'tool')
         verbose_name = "Relación IOC - Herramienta"
         indexes = [
@@ -145,8 +145,7 @@ class IocLoadBatch(models.Model):
     inserted = models.IntegerField(default=0)
     duplicated = models.IntegerField(default=0)
 
-    class Meta:
-        db_table = 'artemis_db.ioc_load_batch'
+
 
     def __str__(self):
         return f"Lote {self.id} - {self.source}"
@@ -163,8 +162,6 @@ class IocLoadResult(models.Model):
     ioc_type = models.CharField(max_length=30)
     status = models.CharField(max_length=15, choices=STATUS_CHOICES)
 
-    class Meta:
-        db_table = 'artemis_db.ioc_load_result'
 
     def __str__(self):
         return f"{self.value} ({self.status})"

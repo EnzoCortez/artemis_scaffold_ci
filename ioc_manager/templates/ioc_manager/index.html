@@ -7,6 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Artemis - Gestión de IoCs</title>
   <link rel="stylesheet" href="{% static 'css/styles.css' %}">
+  <script src="{% static 'js/chart.js' %}"></script>
 </head>
 
 <body>
@@ -28,7 +29,8 @@
     <button class="tab-button" onclick="showTab('depuracion', this)">Depuración</button>
     <button class="tab-button" onclick="showTab('gestion', this)">Gestión Estados</button>
     <button class="tab-button" onclick="showTab('reportes', this)">Reportes</button>
-
+    <button class="tab-button" onclick="showTab('mantenimiento', this)">Mantenimiento</button>
+    <button class="tab-button" onclick="showTab('carga_inicial', this)">Carga Inicial</button>
   </nav>
 
   <!-- MÓDULO CARGA -->
@@ -52,15 +54,19 @@
       <div id="msgCarga" class="message success"></div>
 
       <div id="resultadosCarga">
-        <h4>Duplicados detectados:</h4>
-        <ul id="listaDuplicados"></ul>
-        <h4>IoCs nuevos:</h4>
-        <ul id="listaNuevos"></ul>
+        <h4>IoCs nuevos listos para ingestar:</h4>
+        <ul id="listaNuevos" style="max-height: 150px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; margin-bottom: 10px;"></ul>
         <button class="action" onclick="cargarNuevos()">Cargar IoCs nuevos</button>
+        
+        <h4 style="margin-top: 20px; color: #f39c12;">Duplicados detectados:</h4>
+        <ul id="listaDuplicados" style="max-height: 150px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; color: #f39c12;"></ul>
+
+        <h4 style="margin-top: 20px; color: #e74c3c;">Rechazados / No Válidos:</h4>
+        <ul id="listaErrores" style="max-height: 150px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; color: #e74c3c;"></ul>
+      </div>
       </div>
     </div>
   </div>
-
   <!-- MÓDULO DEPURACIÓN -->
   <div id="depuracion" class="tab-content">
     <div class="section">
@@ -188,19 +194,124 @@
         </select>
       </div>
 
-      <div class="form-row">
-        <button class="action" onclick="generarReporte()">Generar Reporte</button>
+      <div class="form-row" style="flex-direction: column; align-items: flex-start;">
+        <div style="margin-bottom: 15px;">
+          <button class="action" onclick="generarReporte()">Generar Reporte Tradicional</button>
+          <button class="action secondary" onclick="descargarReporteTotalesHerramientas()" style="margin-left: 10px;">Descargar Totales (TXT)</button>
+        </div>
       </div>
+
+      <fieldset style="margin-top: 15px; border: 1px solid #334155; padding: 15px; border-radius: 8px; background: rgba(30, 41, 59, 0.5);">
+        <legend style="color: #e2e8f0; font-weight: bold;">Reporte de Análisis por TXT Subido</legend>
+        <p class="small-note" style="color: #94a3b8;">Sube tu lista de indicadores (TXT) y generaremos un reporte marcando cuáles ya están Ingestados en DB y cuáles No.</p>
+        <input type="file" id="fileCruceReporte" accept=".txt" style="margin-bottom: 10px; color: #e2e8f0;" />
+        <br>
+        <button class="action" onclick="generarReporteDeTxt()">Generar Análisis de TXT</button>
+      </fieldset>
 
       <div id="msgReporte" class="message" style="display:none;"></div>
       <pre id="reporteResultado" class="resultado-reporte" style="display:none;"></pre>
     </div>
   </div>
 
+  <!-- MÓDULO MANTENIMIENTO Y DASHBOARD -->
+  <div id="mantenimiento" class="tab-content">
+    <div class="section">
+      <h3>Dashboard de Métricas</h3>
+      <div style="display: flex; flex-wrap: wrap; gap: 20px;">
+        <!-- Card Resumen -->
+        <div class="card-metric" style="background: #2c3e50; padding: 20px; border-radius: 8px; color: white;">
+          <h4>Total IoCs</h4>
+          <p id="dashTotal" style="font-size: 2.5em; font-weight: bold; margin: 0;">0</p>
+        </div>
+        <!-- Chart 1 -->
+        <div style="flex: 1; min-width: 300px; height: 350px;">
+          <canvas id="chartType"></canvas>
+        </div>
+        <!-- Chart 2 -->
+        <div style="flex: 1; min-width: 300px; height: 350px;">
+          <canvas id="chartStatus"></canvas>
+        </div>
+      </div>
+      <button class="action" onclick="loadDashboard()">Actualizar Gráficos</button>
+    </div>
+
+    <hr style="margin: 30px 0; border-color: #444;">
+
+    <div class="section warning-zone"
+      style="border: 2px solid #e74c3c; padding: 15px; border-radius: 8px; background: rgba(231, 76, 60, 0.1);">
+      <h3 style="color: #e74c3c;">Mantenimiento de Base de Datos</h3>
+      <p>Gestión del Log de Transacciones (LDF).</p>
+
+      <div class="form-row" style="align-items: center; gap: 10px; display: flex;">
+        <strong>Tamaño Actual del Log:</strong>
+        <span id="logSizeDisplay" style="font-family: monospace; font-size: 1.2em;">-- MB</span>
+        <button class="action secondary" onclick="checkLogSize()">Verificar Tamaño</button>
+      </div>
+
+      <div style="margin-top: 20px;">
+        <p class="small-note text-danger" style="color: #e74c3c;">⚠️ Atención: Reducir el log implica vaciarlo y
+          compactarlo (SHRINK). Úselo si el disco está lleno.</p>
+        <button class="action danger" onclick="shrinkLog()">Reducir Log (Shrink)</button>
+      </div>
+      <div id="msgMantenimiento" class="message"></div>
+    </div>
+  </div>
+
+  <!-- MÓDULO CARGA INICIAL -->
+  <div id="carga_inicial" class="tab-content">
+    <div class="section">
+      <h3>Carga Inicial Específica por Herramienta</h3>
+      <p style="font-size: 0.9em; color: #555;">Use esta opción para hacer la sincronización o carga maestra certificando los IoCs a una herramienta específica.</p>
+      
+      <label for="herramientaSelectInit">Seleccione la Herramienta de Destino:</label>
+      <select id="herramientaSelectInit">
+        <option value="">-- Seleccione la Herramienta --</option>
+        {% for tool in tools %}
+        <option value="{{ tool.id }}">{{ tool.name }}</option>
+        {% endfor %}
+      </select>
+
+      <input type="file" id="fileCargaInit" accept=".txt" />
+      <button class="action" onclick="validarCargaHerramienta()">Analizar Carga para Herramienta</button>
+      <div id="msgCargaInit" class="message success"></div>
+
+      <div id="resultadosCargaInit" style="display:none;">
+        <h4 style="margin-top: 10px;">Completamente Nuevos:</h4>
+        <ul id="listaBrandNew" style="max-height: 120px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; margin-bottom: 10px;"></ul>
+
+        <h4 style="margin-top: 10px; color: #2980b9;">Reasignados (Ya existían en BD):</h4>
+        <ul id="listaNewForTool" style="max-height: 120px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; color: #2980b9; margin-bottom: 10px;"></ul>
+        
+        <h4 style="margin-top: 10px; color: #f39c12;">Ignorados (Ya estaban asignados a esta herramienta):</h4>
+        <ul id="listaAlreadyLinked" style="max-height: 120px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; color: #f39c12; margin-bottom: 10px;"></ul>
+
+        <h4 style="margin-top: 10px; color: #e74c3c;">Rechazados por la herramienta:</h4>
+        <ul id="listaErroresInit" style="max-height: 120px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; color: #e74c3c; margin-bottom: 10px;"></ul>
+
+        <button class="action" style="margin-top:15px;" onclick="ejecutarCargaHerramienta()">Confirmar Asignación a Herramienta</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL DETALLES -->
+  <div id="modalDetalles" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center;">
+    <div style="background:#1e293b; color:#e2e8f0; padding:25px; border-radius:10px; min-width:350px; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+      <h3 style="margin-top:0; border-bottom: 1px solid #334155; padding-bottom: 10px; color: #60a5fa;">Detalles del Indicador</h3>
+      <p style="margin-bottom: 8px;"><strong>Valor:</strong> <span id="mdlValue" style="color:#fff;"></span></p>
+      <p style="margin-bottom: 15px;"><strong>Ingresado:</strong> <span id="mdlDate" style="color:#94a3b8;"></span></p>
+      <p style="margin-bottom: 5px; font-weight: bold;">Herramientas:</p>
+      <ul id="mdlTools" style="margin-top: 5px; background: #0f172a; padding: 10px 10px 10px 25px; border-radius: 5px; border: 1px solid #334155;"></ul>
+      <div style="text-align: right; margin-top: 20px;">
+        <button class="action secondary" style="padding: 8px 16px; font-weight: bold;" onclick="document.getElementById('modalDetalles').style.display='none'">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- tus scripts externos -->
 
   <script src="{% static 'js/app.js' %}"></script>
-  <script src="{% static 'js/scripts.js' %}"></script>
+  <script src="{% static 'js/scripts.js' %}?v=5"></script>
 
   <!-- script inline: extiende/sobrescribe funciones para Gestión sin tocar scripts.js -->
   <script>
@@ -371,12 +482,37 @@
             <td>${tipo}</td>
             <td>${status}</td>
             <td>
-              <button type="button" onclick="promptChangeState(${JSON.stringify(item.id || item.pk || value)})">Cambiar</button>
+              <button type="button" onclick="promptChangeState(${JSON.stringify(item.id || item.pk || value).replace(/"/g, '&quot;')})">Cambiar</button>
+              <button type="button" class="action secondary" style="padding: 4px; margin-left: 5px;" onclick="mostrarDetalles(this.dataset.item)" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>Detalles</button>
             </td>
           `;
           tbody.appendChild(tr);
         });
       }
+
+      window.mostrarDetalles = function(itemStr) {
+        try {
+          const item = JSON.parse(itemStr);
+          document.getElementById('mdlValue').textContent = item.value || '';
+          document.getElementById('mdlDate').textContent = item.created_at ? new Date(item.created_at).toLocaleString() : 'Desconocida';
+          
+          const toolsUl = document.getElementById('mdlTools');
+          toolsUl.innerHTML = '';
+          if (item.tools && item.tools.length > 0) {
+            item.tools.forEach(t => {
+              const li = document.createElement('li');
+              li.textContent = t;
+              toolsUl.appendChild(li);
+            });
+          } else {
+            toolsUl.innerHTML = '<li>Sin herramientas registradas</li>';
+          }
+          
+          document.getElementById('modalDetalles').style.display = 'flex';
+        } catch(e) {
+          console.error("Error parsed details:", e);
+        }
+      };
 
       // Confirmación antes de eliminar depurados (usa tu función eliminarDepurados en scripts.js)
       window.confirmarEliminarDepurados = function () {
@@ -391,10 +527,170 @@
 
       // Inicializar: cargar primeros 50 al abrir la pestaña gestión
       document.addEventListener('DOMContentLoaded', function () {
-        // si la pestaña gestión está visible por defecto, refrescamos
-        // llamamos refreshIocList (la hemos redefinido arriba)
         refreshIocList();
       });
+
+      // --- DASHBOARD LOGIC ---
+      window.chartInstanceType = null;
+      window.chartInstanceStatus = null;
+
+      window.loadDashboard = async function () {
+        const btn = document.querySelector('button[onclick="loadDashboard()"]');
+        btn.disabled = true; btn.textContent = 'Cargando...';
+        try {
+          const res = await apiFetch('/api/stats/dashboard/');
+          if (!res.ok) throw new Error("Error cargando estadísticas");
+          const data = await res.json();
+
+          // 1. Total
+          document.getElementById('dashTotal').textContent = data.total;
+
+          // 2. Chart Type (Pie/Doughnut)
+          const ctxType = document.getElementById('chartType').getContext('2d');
+          if (window.chartInstanceType) window.chartInstanceType.destroy();
+
+          const labelsType = data.by_type.map(x => x.ioc_type__name);
+          const valuesType = data.by_type.map(x => x.count);
+
+          window.chartInstanceType = new Chart(ctxType, {
+            type: 'doughnut',
+            data: {
+              labels: labelsType,
+              datasets: [{
+                label: 'IOCs por Tipo',
+                data: valuesType,
+                backgroundColor: ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6', '#95a5a6'],
+                borderWidth: 1
+              }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Distribución por Tipo' } } }
+          });
+
+          // 3. Chart Status (Bar)
+          const ctxStatus = document.getElementById('chartStatus').getContext('2d');
+          if (window.chartInstanceStatus) window.chartInstanceStatus.destroy();
+
+          const labelsStatus = data.by_status.map(x => x.status);
+          const valuesStatus = data.by_status.map(x => x.count);
+
+          window.chartInstanceStatus = new Chart(ctxStatus, {
+            type: 'bar',
+            data: {
+              labels: labelsStatus,
+              datasets: [{
+                label: 'Cantidad por Estado',
+                data: valuesStatus,
+                backgroundColor: ['#2ecc71', '#e74c3c', '#3498db', '#f1c40f', '#9b59b6', '#1abc9c'],
+                borderWidth: 1
+              }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Distribución por Estado' } } }
+          });
+
+        } catch (e) {
+          console.error(e);
+          alert("Error cargando dashboard: " + e.message);
+        } finally {
+          btn.disabled = false; btn.textContent = 'Actualizar Gráficos';
+        }
+      };
+
+      // --- MAINTENANCE LOGIC ---
+      window.checkLogSize = async function () {
+        const display = document.getElementById('logSizeDisplay');
+        display.textContent = "Consultando...";
+        try {
+          const res = await apiFetch('/api/maintenance/db-log-size/');
+          if (!res.ok) throw new Error("Error status " + res.status);
+          const data = await res.json();
+          display.textContent = `${parseFloat(data.size_mb).toFixed(2)} MB (${parseFloat(data.used_percent).toFixed(2)}% usado)`;
+        } catch (e) {
+          display.textContent = "Error";
+          alert("Error consultando log: " + e.message);
+        }
+      };
+
+      window.shrinkLog = async function () {
+        if (!confirm("⚠️ ¿Está seguro de reducir el log de transacciones?\nEsta operación cambia el modo de recuperación a SIMPLE temporalmente.")) return;
+
+        const msgEl = document.getElementById('msgMantenimiento');
+        msgEl.textContent = "Ejecutando Shrink..."; msgEl.className = "message";
+        try {
+          const res = await apiFetch('/api/maintenance/db-log-shrink/', { method: 'POST' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Error desconocido");
+
+          msgEl.textContent = "✅ " + data.message;
+          msgEl.className = "message success";
+          checkLogSize(); // actualizar vista
+        } catch (e) {
+          msgEl.textContent = "❌ Error: " + e.message;
+          msgEl.className = "message error";
+        }
+      };
+
+      // Auto-load dashboard when tab is shown
+      const obs = new MutationObserver((mutations) => {
+        mutations.forEach((m) => {
+          if (m.target.id === 'mantenimiento' && m.target.classList.contains('active')) {
+            if (document.getElementById('dashTotal').textContent === '0' || document.getElementById('dashTotal').textContent === 'Cargando...') {
+              loadDashboard();
+            }
+          }
+        });
+      });
+      const tabM = document.getElementById('mantenimiento');
+      if (tabM) obs.observe(tabM, { attributes: true, attributeFilter: ['class'] });
+
+      // --- REPORTS LOGIC ---
+      window.descargarReporteTotalesHerramientas = async function() {
+        const msgEl = document.getElementById('msgReporte');
+        if (msgEl) showMessage(msgEl, 'Generando reporte de totales...', 'ok');
+        
+        const fInicio = document.getElementById('fechaInicio')?.value || '';
+        const fFin = document.getElementById('fechaFin')?.value || '';
+        const qs = new URLSearchParams();
+        if (fInicio) qs.append('date_start', fInicio);
+        if (fFin) qs.append('date_end', fFin);
+
+        try {
+            const res = await apiFetch(`/api/reportes/totales-herramientas/?${qs.toString()}`, { method: 'GET' });
+            if (!res.ok) throw new Error((await res.text()) || "Error HTTP " + res.status);
+            const blob = await res.blob();
+            downloadBlob(blob, `reporte_totales_herramientas_${new Date().toISOString().slice(0, 10)}.txt`);
+            if (msgEl) showMessage(msgEl, 'Reporte de totales descargado con éxito.', 'ok');
+        } catch(err) {
+            if (msgEl) showMessage(msgEl, 'Error al descargar totales: ' + err.message, 'err');
+        }
+      };
+
+      window.generarReporteDeTxt = async function() {
+        const fileInput = document.getElementById('fileCruceReporte');
+        const msgEl = document.getElementById('msgReporte');
+
+        if (!fileInput || !fileInput.files.length) {
+            return showMessage(msgEl, 'Selecciona un archivo TXT para cruzar.', 'warn');
+        }
+
+        const fd = new FormData();
+        fd.append('file', fileInput.files[0]);
+
+        if (msgEl) showMessage(msgEl, 'Cruzando datos... Esto puede tomar varios segundos.', 'ok');
+
+        try {
+            const res = await apiFetch(`/api/reportes/analisis-txt/`, {
+                method: 'POST',
+                body: fd
+            });
+            
+            if (!res.ok) throw new Error((await res.text()) || "Error HTTP " + res.status);
+            const blob = await res.blob();
+            downloadBlob(blob, `reporte_cruce_txt_${new Date().toISOString().slice(0, 10)}.txt`);
+            if (msgEl) showMessage(msgEl, 'Análisis de TXT descargado con éxito.', 'ok');
+        } catch (err) {
+            if (msgEl) showMessage(msgEl, 'Error al generar análisis TXT: ' + err.message, 'err');
+        }
+      };
 
     })();
   </script>

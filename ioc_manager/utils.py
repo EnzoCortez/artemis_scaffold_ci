@@ -12,15 +12,17 @@ _RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 _RE_IPV4 = re.compile(r"^(25[0-5]|2[0-4]\d|1?\d{1,2})(\.(25[0-5]|2[0-4]\d|1?\d{1,2})){3}$")
 _RE_IPV6 = re.compile(r"^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}$")
 
-# Dominio válido (subdominios permitidos con guiones y números)
+# Dominio válido (subdominios permitidos con guiones, underscores y unicode)
 DOMAIN_REGEX = re.compile(
-    r"^(?=.{1,253}$)(?:[a-zA-Z0-9-]{1,63}\.)+[A-Za-z]{2,63}$"
+    r"^(?=.{1,253}$)(?:[\w-]{1,63}\.)+[A-Za-z]{2,63}$",
+    re.UNICODE
 )
 
 
 # URL robusta: acepta con o sin protocolo, subdominios, puerto opcional y rutas
 _RE_URL = re.compile(
-    r"\b((?:https?://)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?)\b"
+    r"\b((?:https?://)?(?:[\w-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?)\b",
+    re.UNICODE
 )
 
 # hex para hashes (longitudes 32/40/64/128)
@@ -86,64 +88,12 @@ def detect_ioc_type(value: str) -> Optional[str]:
 
 
 # ==========================================================
-# 2. MATRIZ DE HERRAMIENTAS (TODAS ACEPTAN IP)
-#    Las claves aquí son *canonical names* (mayúsculas para normalizar).
+# 2. VALIDACION DINAMICA DE HERRAMIENTAS
 # ==========================================================
-
-_VALID_TOOL_IOCTYPES = {
-    "EDR (CROWDSTRIKE)": {
-        "types": {"IP", "Hash", "Dominio"},
-        "hash_algos": {"md5", "sha256"},
-    },
-    "IPS": {
-        "types": {"IP", "Hash"},
-        "hash_algos": {"md5", "sha1", "sha256"},
-    },
-    "FIREWALL": {
-        "types": {"IP"},
-    },
-    "FTD": {
-        "types": {"IP"},
-    },
-    "MERAKI": {
-        "types": {"IP"},
-    },
-    "PROXY": {
-        "types": {"IP", "Dominio", "URL"},
-    },
-    "PROOFPOINT": {
-        "types": {"Correo", "Dominio", "IP"},
-    }
-}
-
-
-def normalize_tool(tool_name: str) -> str:
-    """Normaliza nombres: strip + upper"""
-    return (tool_name or "").strip().upper()
-
-
-def resolve_tool_key(tool_name: str) -> Optional[str]:
-    """
-    Resuelve el nombre provisto a la clave canonical en _VALID_TOOL_IOCTYPES.
-    Hace matching flexible (contains / startswith / equal).
-    """
-    if not tool_name:
-        return None
-    norm = normalize_tool(tool_name)
-    # match exact
-    if norm in _VALID_TOOL_IOCTYPES:
-        return norm
-    # try to find key that contains norm or viceversa
-    for key in _VALID_TOOL_IOCTYPES.keys():
-        key_up = key.upper()
-        if norm == key_up or norm in key_up or key_up in norm:
-            return key
-    return None
-
 
 def validate_tool_accepts_ioc(tool_name: str, value: str) -> Tuple[bool, Optional[str]]:
     """
-    Valida si una herramienta puede ingerir un IOC.
+    Valida si una herramienta puede ingerir un IOC basándose en la base de datos.
     Retorna: (True, None) si se puede
             (False, "motivo") si NO se permite
     """
@@ -151,28 +101,33 @@ def validate_tool_accepts_ioc(tool_name: str, value: str) -> Tuple[bool, Optiona
     if not tipo:
         return False, f"No se reconoce el tipo de IOC para '{value}'."
 
-    # resolver clave canonical
-    key = resolve_tool_key(tool_name)
-    if not key:
-        return False, f"Herramienta '{tool_name}' no está configurada."
+    # Resolver herramienta (exact match case-insensitive, luego partial)
+    tool = Tool.objects.filter(name__iexact=tool_name).first()
+    if not tool:
+         tool = Tool.objects.filter(name__icontains=tool_name).first()
+         
+    if not tool:
+        return False, f"Herramienta '{tool_name}' no existe en base de datos."
 
-    cfg = _VALID_TOOL_IOCTYPES[key]
+    from .models import ToolIndicatorRule, ToolHashType
 
-    # todas aceptan IP → forzamos True si tipo es IP
-    if tipo == "IP":
-        return True, None
-
-    # tipo permitido?
-    if tipo not in cfg["types"]:
-        return False, f"'{tool_name}' no acepta IOC de tipo {tipo}."
+    # Chequear regla de ingesta dinámica
+    rule = ToolIndicatorRule.objects.filter(tool=tool, ioc_type__name__iexact=tipo, can_ingest=True).exists()
+    if not rule:
+        return False, f"'{tool.name}' no tiene habilitada la ingesta de '{tipo}'."
 
     # si es Hash, validar algoritmo
     if tipo == "Hash":
         algo = detect_hash_algorithm(value)
         if not algo:
             return False, "Hash inválido."
-        if cfg["hash_algos"] and algo not in cfg["hash_algos"]:
-            return False, f"'{tool_name}' solo acepta hashes: {', '.join(sorted(cfg['hash_algos']))}."
+            
+        # Si la herramienta tiene mapeos de algoritmos, verificar. Si no tiene ninguno configurado, acepta todos.
+        hash_configs = ToolHashType.objects.filter(tool=tool, ioc_type__name__iexact="Hash").values_list('algorithm', flat=True)
+        if hash_configs:
+            allowed_algos = [h.lower().strip() for h in hash_configs]
+            if algo not in allowed_algos:
+                return False, f"'{tool.name}' solo acepta hashes: {', '.join(allowed_algos)}."
 
     return True, None
 
@@ -211,19 +166,11 @@ def ingest_ioc_to_tool(ioc: IocEntry, tool_name: str, status: str = IocTool.STAT
         # Ingestion.objects.create(ioc=ioc, tool=None, status=Ingestion.STATUS_FAILED, detail=reason, ...)
         return None
 
-    # resolver el Tool real por su nombre (intentar match exacto y flexible)
+    # intentar match exacto y luego parcial
     try:
-        # primer intento: exact match (insensible a mayúsculas)
         tool = Tool.objects.filter(name__iexact=tool_name).first()
         if not tool:
-            # intentar resolver por contains
             tool = Tool.objects.filter(name__icontains=tool_name).first()
-        if not tool:
-            # fallback: buscar por resolved key en _VALID_TOOL_IOCTYPES
-            key = resolve_tool_key(tool_name)
-            if key:
-                # buscar tool cuyo nombre contenga key (case-insensitive)
-                tool = Tool.objects.filter(name__icontains=key.split()[0]).first()
         if not tool:
             raise Tool.DoesNotExist()
     except Tool.DoesNotExist:
@@ -310,38 +257,33 @@ from collections import defaultdict
 from .models import (
     Tool,
     ToolIndicatorRule,
+    ToolHashType,
+    IocEntry,
     IocTool,
-    IocTool,
-    # Ingestion removed
-    # IocHistory removed
 )
-from .utils import _VALID_TOOL_IOCTYPES
-
 
 def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
     """
-    Asocia IOC ↔ Herramientas válidas en BULK
-    - Valida tipo IOC
-    - Respeta ToolIndicatorRule
-    - Evita duplicados
-    - Crea Ingestions + History
+    Asocia IOC ↔ Herramientas válidas en BULK Dinámicamente
     """
-
     if not iocs:
         return
 
     now = timezone.now()
 
-    # 🔹 Preload herramientas
-    tools = {
-        t.name.upper(): t
-        for t in Tool.objects.all()
-    }
+    # 🔹 Preload herramientas activas
+    active_tools = list(Tool.objects.all())
 
-    # 🔹 Preload reglas ToolIndicatorRule
+    # 🔹 Preload reglas ToolIndicatorRule (Diccionario tool_id -> set de nombres de tipos permitidos)
     allowed_rules = defaultdict(set)
-    for rule in ToolIndicatorRule.objects.filter(can_ingest=True):
-        allowed_rules[rule.tool_id].add(rule.ioc_type_id)
+    for rule in ToolIndicatorRule.objects.filter(can_ingest=True).select_related('ioc_type'):
+        allowed_rules[rule.tool_id].add(rule.ioc_type.name.upper())
+
+    # 🔹 Preload reglas ToolHashType
+    allowed_hashes = defaultdict(set)
+    for hrule in ToolHashType.objects.select_related('ioc_type'):
+        if hrule.ioc_type.name.upper() == "HASH":
+            allowed_hashes[hrule.tool_id].add(hrule.algorithm.lower().strip())
 
     # 🔹 Preload relaciones existentes
     existing_links = set(
@@ -349,42 +291,31 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
         .values_list('ioc_id', 'tool_id')
     )
 
-    # ingesions loaded check removed
-
-
     ioc_tools_to_create = []
-    # ingestions_to_create removed
-    # history_to_create removed
+    local_added = set()
 
     for ioc in iocs:
-        ioc_type_name = ioc.ioc_type.name
+        ioc_type_name = ioc.ioc_type.name.upper()
 
-        for tool_name, config in _VALID_TOOL_IOCTYPES.items():
-            if ioc_type_name not in config.get("types", set()):
+        for tool in active_tools:
+            # 🔒 Validación cruzada Dinámica
+            if ioc_type_name not in allowed_rules.get(tool.id, set()):
                 continue
 
-            tool = tools.get(tool_name.upper())
-            if not tool:
-                continue
-
-            # 🔒 Validación cruzada con ToolIndicatorRule
-            if ioc.ioc_type_id not in allowed_rules.get(tool.id, set()):
-                continue
-
-            # 🔒 Validación de algoritmo de Hash (EDR vs IPS)
-            if ioc_type_name == "Hash":
-                # Detectar algoritmo del valor del IOC
+            # 🔒 Validación de algoritmo de Hash
+            if ioc_type_name == "HASH":
                 algo = detect_hash_algorithm(ioc.value)
                 if not algo:
-                    continue # Hash inválido, saltar
+                    continue 
                 
-                allowed_algos = config.get("hash_algos")
-                if allowed_algos and algo not in allowed_algos:
-                    continue # Algoritmo no permitido para esta herramienta case
+                tool_hash_algos = allowed_hashes.get(tool.id, set())
+                # Si configuró algoritmos y no coincide el detectado, se descarta.
+                if tool_hash_algos and algo not in tool_hash_algos:
+                    continue
 
             key = (ioc.id, tool.id)
 
-            if key not in existing_links:
+            if key not in existing_links and key not in local_added:
                 ioc_tools_to_create.append(
                     IocTool(
                         ioc=ioc, 
@@ -393,9 +324,7 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
                         ingested_at=now
                     )
                 )
-
-            # Ingestion creation removed
-            # History creation removed
+                local_added.add(key)
 
     # 🔥 BULK WRITE
     with transaction.atomic():
@@ -404,10 +333,6 @@ def associate_iocs_with_allowed_tools_bulk(iocs, user=None):
                 ioc_tools_to_create,
                 batch_size=1000
             )
-        
-        # Ingestions merged into IocTool (handle update if needed, but for bulk new this is fine)
-        # However, we initialized IocTool without status above in previous impl?
-        # Let's fix loop to set status
 
 
 
