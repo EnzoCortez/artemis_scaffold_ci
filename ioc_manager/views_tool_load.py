@@ -6,11 +6,21 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 
-from .models import IocEntry, IocType, IocTool, Tool
-from .utils import detect_ioc_type, validate_tool_accepts_ioc
+from .models import IocEntry, IocType, IocTool, Tool, ToolIndicatorRule, ToolHashType
+from .utils import detect_ioc_type, detect_hash_algorithm
 from .views import is_invalid_value
 
 logger = logging.getLogger(__name__)
+
+def get_in_chunks(qs, field_name, value_list, chunk_size=900):
+    """
+    Generador para dividir consultas grandes con __in= y evitar el límite de 2100 parámetros en MSSQL.
+    Retorna los fragmentos de resultados QuerySet.
+    """
+    for i in range(0, len(value_list), chunk_size):
+        chunk = value_list[i:i + chunk_size]
+        yield qs.filter(**{f"{field_name}__in": chunk})
+
 
 class ValidateToolInitialLoadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -34,7 +44,9 @@ class ValidateToolInitialLoadView(APIView):
             file_obj.seek(0)
             text = b''.join(chunk for chunk in file_obj.chunks()).decode('utf-8', errors='ignore')
 
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        from .utils import remove_defanging
+        raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
+        lines = [remove_defanging(l) for l in raw_lines]
 
         total = 0
         skipped = []
@@ -44,23 +56,47 @@ class ValidateToolInitialLoadView(APIView):
             total += 1
             if is_invalid_value(line):
                 skipped.append({'line': line, 'reason': 'Valor inválido o placeholder'})
+            elif len(line) > 500:
+                skipped.append({'line': line[:50] + '[...]', 'reason': 'Supera límite de 500 caracteres (No soportado por BD)'})
             else:
                 clean_values.append(line)
 
         clean_values = list(set(clean_values))
 
-        # Check existing Iocs
-        existing_qs = IocEntry.objects.filter(value__in=clean_values).select_related('ioc_type')
-        existing_map = {ioc.value: ioc for ioc in existing_qs}
+        # Check existing Iocs in CHUNKS
+        existing_map = {}
+        for qs_chunk in get_in_chunks(IocEntry.objects.select_related('ioc_type'), 'value', clean_values):
+            for ioc in qs_chunk:
+                existing_map[ioc.value] = ioc
 
-        # Check existing IocTool mapping for THIS tool
-        ioc_ids = [ioc.id for ioc in existing_qs]
-        existing_tool_qs = IocTool.objects.filter(ioc_id__in=ioc_ids, tool=tool).values_list('ioc_id', flat=True)
-        already_linked_ioc_ids = set(existing_tool_qs)
+        # Check existing IocTool mapping for THIS tool in CHUNKS
+        ioc_ids = [ioc.id for ioc in existing_map.values()]
+        already_linked_ioc_ids = set()
+        for qs_chunk in get_in_chunks(IocTool.objects.filter(tool=tool), 'ioc_id', ioc_ids):
+            already_linked_ioc_ids.update(qs_chunk.values_list('ioc_id', flat=True))
 
-        new_for_tool = []      # Exists in DB, but not linked to this tool
-        brand_new_items = []   # Does not exist in DB at all
-        already_linked = []    # Already in DB AND linked to this tool
+        new_for_tool = []      
+        brand_new_items = []   
+        already_linked = []    
+
+        # PRE-LOAD VALIDATION RULES O(1)
+        allowed_types_qs = ToolIndicatorRule.objects.filter(tool=tool, can_ingest=True).select_related('ioc_type')
+        allowed_types = {rule.ioc_type.name.lower() for rule in allowed_types_qs}
+        
+        allowed_hash_algos = set(ToolHashType.objects.filter(tool=tool, ioc_type__name__iexact="Hash").values_list('algorithm', flat=True))
+        allowed_hash_algos = {h.lower().strip() for h in allowed_hash_algos}
+
+        def fast_validate(tool_obj, val, detect_typ):
+            typ_lower = detect_typ.lower()
+            if typ_lower not in allowed_types:
+                return False, f"'{tool_obj.name}' no tiene habilitada la ingesta de '{detect_typ}'."
+            if typ_lower == "hash":
+                algo = detect_hash_algorithm(val)
+                if not algo:
+                    return False, "Hash inválido."
+                if allowed_hash_algos and algo.lower().strip() not in allowed_hash_algos:
+                     return False, f"'{tool_obj.name}' solo acepta hashes: {', '.join(allowed_hash_algos)}."
+            return True, None
 
         for value in clean_values:
             try:
@@ -72,8 +108,8 @@ class ValidateToolInitialLoadView(APIView):
                 skipped.append({'line': value, 'reason': 'No pudo detectar tipo'})
                 continue
             
-            # Validate specifically against THIS tool
-            is_valid, reason = validate_tool_accepts_ioc(tool.name, value)
+            # Fast Validation
+            is_valid, reason = fast_validate(tool, value, detected)
             if not is_valid:
                 skipped.append({'line': value, 'reason': f'Rechazado por reglas: {reason}'})
                 continue
@@ -129,7 +165,7 @@ class ExecuteToolInitialLoadView(APIView):
         if not isinstance(brand_new_items, list) or not isinstance(new_for_tool_items, list):
             return Response({'detail': 'Estructura de datos inválida.'}, status=400)
             
-        source_name = f"{tool.name}"
+        source_name = "Base Artemis"
 
         ioc_type_map = {t.name.lower(): t for t in IocType.objects.all()}
 
@@ -137,16 +173,29 @@ class ExecuteToolInitialLoadView(APIView):
         linked_iocs_count = 0
 
         with transaction.atomic():
-            # 1. Objeto IocEntry para los brand new
+            # 1. Crear IocEntry para brand new (Chunk de creación masiva)
             new_ioc_entries = []
-            brand_new_values = set()
+            requested_brand_new_values = set()
+            for item in brand_new_items:
+                val = item.get('value')
+                if val:
+                    requested_brand_new_values.add(val)
+                    
+            # --- DEFENSIVE CHECK: Case Insensitive for MSSQL ---
+            unexpectedly_existing_values_lower = set()
+            for qs_chunk in get_in_chunks(IocEntry.objects.all(), 'value', list(requested_brand_new_values)):
+                for found_val in qs_chunk.values_list('value', flat=True):
+                    unexpectedly_existing_values_lower.add(found_val.lower())
+                
+            added_values_lower = set()
             for item in brand_new_items:
                 val = item.get('value')
                 typ = item.get('detected_type', '').lower()
                 if not val or not typ:
                     continue
-                if typ in ioc_type_map and val not in brand_new_values:
-                    brand_new_values.add(val)
+                val_lower = val.lower()
+                if typ in ioc_type_map and val_lower not in unexpectedly_existing_values_lower and val_lower not in added_values_lower:
+                    added_values_lower.add(val_lower)
                     new_ioc_entries.append(
                         IocEntry(
                             value=val,
@@ -160,14 +209,23 @@ class ExecuteToolInitialLoadView(APIView):
                 IocEntry.objects.bulk_create(new_ioc_entries)
                 created_iocs_count = len(new_ioc_entries)
             
-            newly_created_qs = IocEntry.objects.filter(value__in=brand_new_values).values_list('id', flat=True)
+            # Obtener IDs de los recién creados con Chunking
+            newly_created_qs = set()
+            for qs_chunk in get_in_chunks(IocEntry.objects.all(), 'value', [x.value for x in new_ioc_entries]):
+                newly_created_qs.update(qs_chunk.values_list('id', flat=True))
             
+            # Obtener IDs de los que existen para asociar (Chunking)
             existing_values_to_link = [i.get('value') for i in new_for_tool_items if i.get('value')]
-            existing_to_link_qs = IocEntry.objects.filter(value__in=existing_values_to_link).values_list('id', flat=True)
+            existing_to_link_qs = set()
+            for qs_chunk in get_in_chunks(IocEntry.objects.all(), 'value', existing_values_to_link):
+                existing_to_link_qs.update(qs_chunk.values_list('id', flat=True))
 
-            all_ids_to_link = set(newly_created_qs) | set(existing_to_link_qs)
+            all_ids_to_link = newly_created_qs | existing_to_link_qs
 
-            already_linked_db = set(IocTool.objects.filter(ioc_id__in=all_ids_to_link, tool=tool).values_list('ioc_id', flat=True))
+            # Encontrar cuáles ya están enlazados (Chunking)
+            already_linked_db = set()
+            for qs_chunk in get_in_chunks(IocTool.objects.filter(tool=tool), 'ioc_id', list(all_ids_to_link)):
+                already_linked_db.update(qs_chunk.values_list('ioc_id', flat=True))
             
             ids_to_actually_link = all_ids_to_link - already_linked_db
             

@@ -1,0 +1,106 @@
+{% extends "admin/change_list.html" %}
+{% load static %}
+
+{% block extrahead %}
+{{ block.super }}
+<!-- Cargar Chart.js desde la ruta estática local del proyecto -->
+<script src="{% static 'js/chart.js' %}"></script>
+<style>
+  /* Personalizaciones para adaptar el gráfico al estilo de Django Admin */
+  .admin-chart-container {
+    background: #121824;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+  .admin-chart-title {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: #f8fafc;
+    font-size: 1.1rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{% if chart_data_json %}
+<div class="admin-chart-container">
+  <h3 class="admin-chart-title">📊 Volumen de Ingesta por Carga (Últimos 50 lotes filtrados)</h3>
+  <div style="width: 100%; height: 260px; position: relative;">
+    <canvas id="adminUploadHistoryChart"></canvas>
+  </div>
+<!-- Bloque de datos JSON seguro para el IDE -->
+<script id="admin-chart-data" type="application/json">
+  {{ chart_data_json|safe }}
+</script>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function() {
+    try {
+      const dataEl = document.getElementById('admin-chart-data');
+      const data = dataEl ? JSON.parse(dataEl.textContent) : null;
+      const ctx = document.getElementById('adminUploadHistoryChart');
+      if (ctx && data) {
+        new Chart(ctx.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels: data.labels,
+            datasets: [
+              {
+                label: 'Insertados',
+                data: data.inserted,
+                backgroundColor: '#10b981', /* Verde esmeralda */
+                borderWidth: 0
+              },
+              {
+                label: 'Duplicados',
+                data: data.duplicated,
+                backgroundColor: '#f59e0b', /* Ámbar/Amarillo */
+                borderWidth: 0
+              },
+              {
+                label: 'Rechazados',
+                data: data.rejected,
+                backgroundColor: '#ef4444', /* Rojo */
+                borderWidth: 0
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                labels: { color: '#94a3b8' }
+              }
+            },
+            scales: {
+              x: {
+                stacked: true,
+                ticks: { color: '#94a3b8', font: { size: 10 } },
+                grid: { color: '#1e293b' }
+              },
+              y: {
+                stacked: true,
+                ticks: { color: '#94a3b8', font: { size: 10 } },
+                grid: { color: '#1e293b' }
+              }
+            }
+          }
+        });
+      }
+    } catch(e) {
+      console.error("Error al renderizar el gráfico en Django Admin:", e);
+    }
+  });
+</script>
+{% endif %}
+
+{{ block.super }}
+{% endblock %}

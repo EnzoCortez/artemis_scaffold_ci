@@ -44,6 +44,43 @@ def detect_hash_algorithm(value: str) -> Optional[str]:
         128: "sha512"
     }.get(L, None)
 
+def remove_defanging(value: str) -> str:
+    """Remueve ofuscaciones comunes de indicadores (ej. [.] -> . , (-) -> -)"""
+    if not value:
+        return value
+    v = value.replace("[.]", ".").replace("(.)", ".").replace("{.}", ".")
+    v = v.replace("[-]", "-").replace("(-)", "-").replace("{-}", "-")
+    v = v.replace("[ : ]", ":").replace("[:]", ":")
+    return v
+
+def apply_defanging(value: str, ioc_type: str = None) -> str:
+    """
+    Aplica ofuscación (defanging) a un indicador para exportación segura.
+    Los Hashes NO se ofuscan. Para IPs y dominios reemplaza '.' por '[.]'.
+    Para URLs reemplaza 'http' por 'hxxp' y '.' por '[.]'.
+    """
+    if not value:
+        return value
+
+    # No ofuscar hashes
+    if ioc_type and 'hash' in ioc_type.lower():
+        return value
+    # Doble verificación: si parece hash por longitud, no ofuscar
+    if detect_hash_algorithm(value):
+        return value
+
+    v = value
+
+    # URLs: reemplazar protocolo y puntos
+    if v.lower().startswith("http://"):
+        v = "hxxp://" + v[7:]
+    elif v.lower().startswith("https://"):
+        v = "hxxps://" + v[8:]
+
+    # Reemplazar puntos por [.] (aplica a IPs, dominios y URLs)
+    v = v.replace(".", "[.]")
+
+    return v
 
 def detect_ioc_type(value: str) -> Optional[str]:
     """
@@ -53,7 +90,9 @@ def detect_ioc_type(value: str) -> Optional[str]:
     """
     if not value:
         return None
-    v = value.strip()
+    
+    # 1. Limpiar ofuscación (XP: Defanging robusto)
+    v = remove_defanging(value).strip()
 
     # Email
     if _RE_EMAIL.fullmatch(v):

@@ -16,6 +16,12 @@ window.iocsDuplicados = [];
 window.iocsNuevos = [];
 window.originalFilename = 'iocs';
 
+// Helper global: verifica si el toggle de ofuscación está activo
+function isDefangActive() {
+  const toggle = document.getElementById('defangToggle');
+  return toggle ? toggle.checked : false;
+}
+
 
 /* ---------------------------
   Helpers: CSRF + fetch wrapper
@@ -159,6 +165,7 @@ function renderListIntoUL(ulEl, items, options = {}) {
   }
 
   items.forEach(it => {
+    let tools = [];
     let value = '';
     let type = '';
     if (typeof it === 'string') {
@@ -167,15 +174,181 @@ function renderListIntoUL(ulEl, items, options = {}) {
     } else if (typeof it === 'object' && it !== null) {
       value = it.value || it.ioc || it.name || '';
       type = it.detected_type || it.ioc_type || detectarTipoIoc(value);
+      tools = it.tools || [];
     } else {
       value = String(it);
       type = detectarTipoIoc(value);
     }
     const li = document.createElement('li');
-    li.textContent = value;                // mostrar solo el valor
+    li.style.display = 'flex';
+    li.style.justifyContent = 'space-between';
+    li.style.alignItems = 'center';
+    li.style.marginBottom = '5px';
+
+    let htmlContent = `<span>${value}</span>`;
+    if (options.showTools && tools.length > 0) {
+      htmlContent += `<span style="font-size: 0.85em; color: #7f8c8d; margin-left: 10px;">(Herramientas: ${tools.join(', ')})</span>`;
+    } else if (options.showTools) {
+      htmlContent += `<span style="font-size: 0.85em; color: #7f8c8d; margin-left: 10px;">(Sin herramientas)</span>`;
+    }
+
+    let actionsHtml = '';
+    if (options.showAssignBtn) {
+      actionsHtml = `
+        <button type="button" class="action secondary" style="padding: 2px 5px; font-size: 0.8em; margin-left: 10px;" 
+          onclick="promptAssignTool('${value}')">Asignar a Herramienta</button>
+      `;
+    }
+
+    li.innerHTML = `<div style="display:flex; align-items:center;">${htmlContent}</div>${actionsHtml}`;
     li.dataset.value = value;             // dato limpio para exportar
     li.dataset.type = type;               // dato del tipo 
     ulEl.appendChild(li);
+  });
+}
+
+
+window.toggleColumn = function(toolId, checkbox) {
+  const checkboxes = document.querySelectorAll(`.matrix-checkbox[data-tool="${toolId}"]`);
+  checkboxes.forEach(cb => {
+    if (!cb.disabled) {
+      cb.checked = checkbox.checked;
+    }
+  });
+};
+
+window.asignarHerramientasMasivo = async function() {
+  const checkboxes = document.querySelectorAll('.matrix-checkbox:checked');
+  if (checkboxes.length === 0) {
+    return alert('Seleccione al menos un IoC duplicado y herramienta.');
+  }
+
+  const assignments = Array.from(checkboxes).map(cb => ({
+    value: cb.dataset.ioc,
+    tool_id: parseInt(cb.dataset.tool)
+  }));
+
+
+  if (!confirm(`¿Confirmar ${assignments.length} asignaciones seleccionadas?`)) {
+    return;
+  }
+
+  try {
+    const res = await apiFetch('/api/iocs/assign-tool-bulk/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignments: assignments })
+    });
+    
+    if (!res.ok) {
+      const txt = await res.text();
+      return alert('Error en asignación masiva: ' + txt);
+    }
+
+    const data = await res.json();
+    let msg = data.detail;
+    if (data.errors && data.errors.length > 0) {
+      msg += '\n\nDetalles de omisión (Incompatibilidades u otros):\n' + data.errors.map(e => `- ${e.value}: ${e.reason}`).join('\n');
+    }
+    alert(msg);
+    
+    // Opcional: recargar vista general si se necesita
+    if (typeof refreshIocList === 'function') refreshIocList();
+    
+    // Deseleccionar todo
+    document.querySelectorAll('.matrix-checkbox, .col-checkbox').forEach(cb => cb.checked = false);
+
+  } catch (err) {
+    alert('Error de conexión: ' + err.message);
+  }
+};
+
+function renderDuplicatesTable(tbodyId, items, toolsInfo) {
+  const tbody = document.getElementById(tbodyId);
+  const thead = document.getElementById('listaDuplicadosHead');
+  const controls = document.getElementById('matrixControls');
+  
+  if (!tbody || !thead) return;
+  tbody.innerHTML = '';
+  thead.innerHTML = '';
+  
+  if (!Array.isArray(items) || items.length === 0) {
+    if (controls) controls.style.display = 'none';
+    return;
+  }
+  
+  if (controls) controls.style.display = 'block';
+
+  // 1. Renderizar Cabeceras Dinámicas
+  const trHead = document.createElement('tr');
+  trHead.innerHTML = `
+    <th style="padding: 8px; text-align: left; width: 120px;">IoC</th>
+    <th style="padding: 8px; text-align: left; width: 80px;">Tipo</th>
+    <th style="padding: 8px; text-align: left; width: 120px;">Htas. Actuales</th>
+  `;
+  
+  (toolsInfo || []).forEach(tool => {
+    trHead.innerHTML += `
+      <th style="padding: 8px; text-align: center; border-left: 1px solid #ddd;">
+        <div style="font-size: 0.9em;">Asignar: ${tool.name}</div>
+        <div style="margin-top: 5px; font-weight: normal; font-size: 0.8em;">
+          <label style="cursor:pointer;"><input type="checkbox" class="col-checkbox" onchange="toggleColumn(${tool.id}, this)"> Todo</label>
+        </div>
+      </th>
+    `;
+  });
+  thead.appendChild(trHead);
+
+  // 2. Renderizar Filas de Matriz
+  items.forEach(it => {
+    let value = '';
+    let type = '';
+    let toolsCurrent = [];
+    
+    if (typeof it === 'object' && it !== null) {
+      value = it.value || it.ioc || it.name || '';
+      type = it.detected_type || it.ioc_type || detectarTipoIoc(value);
+      toolsCurrent = it.tools || [];
+    } else {
+      value = String(it);
+      type = detectarTipoIoc(value);
+    }
+
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #eee';
+
+    const toolsHtml = toolsCurrent.length > 0 
+      ? toolsCurrent.join(', ') 
+      : '<span style="color:#999">Ninguna</span>';
+
+    let rowHtml = `
+      <td style="padding: 8px; font-weight: bold; word-break: break-all;">${value}</td>
+      <td style="padding: 8px;">${type}</td>
+      <td style="padding: 8px;">${toolsHtml}</td>
+    `;
+
+    // Generar celda por cada herramienta
+    (toolsInfo || []).forEach(tool => {
+      let cellContent = '';
+      
+      // Si el ioc ya tiene esta herramienta
+      if (toolsCurrent.includes(tool.name)) {
+        cellContent = `<span style="font-size: 0.8em; color: #7f8c8d; background: #ecf0f1; padding: 2px 5px; border-radius: 4px;" title="Ya está asignado">🔒 Ya tiene</span>`;
+      } 
+      // Si el tipo de ioc no es compatible con esta herramienta
+      else if (!tool.compatible_types.includes(type)) {
+        cellContent = `<span style="font-size: 0.8em; color: #e74c3c; background: #fdf5f5; padding: 2px 5px; border-radius: 4px;" title="La herramienta no acepta este tipo">🚫 Incompatible</span>`;
+      } 
+      // Si es compatible y no lo tiene, dibujamos checkbox
+      else {
+        cellContent = `<input type="checkbox" class="matrix-checkbox" data-ioc="${value}" data-tool="${tool.id}" style="transform: scale(1.2); cursor: pointer;">`;
+      }
+
+      rowHtml += `<td style="padding: 8px; text-align: center; border-left: 1px solid #f1f1f1;">${cellContent}</td>`;
+    });
+
+    tr.innerHTML = rowHtml;
+    tbody.appendChild(tr);
   });
 }
 
@@ -294,12 +467,7 @@ async function validarCarga() {
     /* ===============================
        4️⃣ UI
     =============================== */
-    renderListIntoUL(
-      document.getElementById('listaDuplicados'),
-      duplicates,
-      { showType: true }
-    );
-
+    renderDuplicatesTable('listaDuplicadosBody', duplicates, data.tools_info || []);
     renderListIntoUL(
       document.getElementById('listaNuevos'),
       newItems,
@@ -354,7 +522,7 @@ async function cargarNuevos() {
     const res = await apiFetch('/api/load-new/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items, fuente })
+      body: JSON.stringify({ items, fuente, file_name: window.originalFilename || '' })
     });
 
     // Si no es ok, tratamos de leer texto para debug
@@ -387,7 +555,8 @@ async function cargarNuevos() {
     // Descargar TXT de ingestados por batch (solo si batch existe y hay insertados)
     if (batch && inserted.length) {
       try {
-        const r1 = await apiFetch(`/api/export/ingested-by-batch/${encodeURIComponent(batch)}/`);
+        const defangParam = isDefangActive() ? '?defang=true' : '';
+        const r1 = await apiFetch(`/api/export/ingested-by-batch/${encodeURIComponent(batch)}/${defangParam}`);
         if (r1.ok) {
           const blob = await r1.blob();
           downloadBlob(blob, `iocs_ingestados_${batch}.zip`);
@@ -613,7 +782,8 @@ async function downloadClassifiedZip(items, title) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         items: items,
-        filename_prefix: title
+        filename_prefix: title,
+        defang: isDefangActive()
       })
     });
 
@@ -657,7 +827,7 @@ async function buscarManual() {
       return showMessage(msgEl || 'msgGestionManual', `Error buscando: ${res.status} ${txt}`, 'err');
     }
     const data = await res.json();
-    const arr = Array.isArray(data) ? data : (data.results || []);
+    const arr = data.results || (Array.isArray(data) ? data : []);
 
     arr.forEach(ioc => {
       const id = ioc.id || ioc.pk || '';
@@ -682,7 +852,7 @@ async function buscarManual() {
       const tdAction = document.createElement('td');
       const btn = document.createElement('button');
       btn.textContent = 'Cambiar';
-      btn.onclick = function () { promptChangeState(id); }; // Safe closure
+      btn.onclick = function () { toggleIocState(btn, id, status); }; // Safe closure
       tdAction.appendChild(btn);
       tr.appendChild(tdAction);
 
@@ -696,34 +866,60 @@ async function buscarManual() {
   }
 }
 
-function promptChangeState(iocId) {
-  const newState = prompt('Ingrese nuevo estado (BLOQUEADO o DEPURADO):');
-  if (!newState) return;
-  const ns = newState.toUpperCase().trim();
-  if (!['BLOQUEADO', 'DEPURADO'].includes(ns)) return alert('Estado inválido.');
-  cambiarEstadoManual(iocId, ns);
-}
-
-async function cambiarEstadoManual(iocId, newState) {
+window.toggleIocState = async function(btn, iocId, currentStatus) {
+  if (currentStatus === 'NO EXISTE') {
+    alert('El indicador no existe en la base de datos y no se puede cambiar su estado.');
+    return;
+  }
+  const nextStatus = currentStatus === 'BLOQUEADO' ? 'DEPURADO' : 'BLOQUEADO';
+  
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = '...';
+  
   const msgEl = document.getElementById('msgGestionManual') || null;
   try {
     const res = await apiFetch('/api/change-state/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ioc_id: iocId, new_state: newState })
+      body: JSON.stringify({ ioc_id: iocId, new_state: nextStatus })
     });
     if (!res.ok) {
       const txt = await res.text();
-      return showMessage(msgEl || 'msgGestionManual', `Error cambiando estado: ${res.status} ${txt}`, 'err');
+      showMessage(msgEl || 'msgGestionManual', `Error cambiando estado: ${res.status} ${txt}`, 'err');
+      return;
     }
     const data = await res.json();
     showMessage(msgEl || 'msgGestionManual', data.detail || 'Estado actualizado', 'ok');
-    buscarManual();
+    
+    // Actualizar visualmente la fila
+    const tr = btn.closest('tr');
+    if (tr) {
+      tr.cells[2].textContent = nextStatus;
+      
+      // Actualizar data-item del botón Detalles de la misma fila
+      const detBtn = tr.querySelector('button[onclick^="mostrarDetalles"]');
+      if (detBtn) {
+        const itemData = JSON.parse(detBtn.getAttribute('data-item'));
+        itemData.status = nextStatus;
+        detBtn.setAttribute('data-item', JSON.stringify(itemData));
+      }
+    }
+    
+    // Actualizar el onclick del botón Cambiar
+    if (btn.onclick) {
+      btn.onclick = function() { toggleIocState(btn, iocId, nextStatus); };
+    } else {
+      btn.setAttribute('onclick', `toggleIocState(this, ${JSON.stringify(iocId).replace(/"/g, '&quot;')}, '${nextStatus}')`);
+    }
   } catch (err) {
     showMessage(msgEl || 'msgGestionManual', 'Error de conexión: ' + (err.message || err), 'err');
     console.error(err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
-}
+};
 
 /* ---------------------------
    GESTIÓN - MASIVA (bulk change)
@@ -836,7 +1032,7 @@ async function refreshIocList() {
     const res = await apiFetch('/api/iocs/');
     if (!res.ok) return;
     const data = await res.json();
-    const arr = Array.isArray(data) ? data : (data.results || []);
+    const arr = data.results || (Array.isArray(data) ? data : []);
     tbody.innerHTML = '';
 
     arr.forEach(ioc => {
@@ -862,7 +1058,7 @@ async function refreshIocList() {
       const tdAction = document.createElement('td');
       const btn = document.createElement('button');
       btn.textContent = 'Cambiar';
-      btn.onclick = function () { promptChangeState(id); };
+      btn.onclick = function () { toggleIocState(btn, id, status); };
       tdAction.appendChild(btn);
       tr.appendChild(tdAction);
 

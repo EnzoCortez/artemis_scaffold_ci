@@ -1,0 +1,134 @@
+specification {
+  element person {
+    style {
+      shape person
+    }
+  }
+  element system
+  element externalSystem {
+    style {
+      shape browser
+    }
+  }
+  element container
+  element component
+  element database {
+    style {
+      shape cylinder
+    }
+  }
+}
+
+model {
+  admin = person "Analista SOC" {
+    description "Carga IoCs y gestiona el ciclo de vida."
+  }
+
+  firewall = externalSystem "Firewall Perimetral" {
+    description "Red corporativa externa."
+  }
+  
+  ips = externalSystem "Sistema IPS" {
+    description "Prevención de intrusiones."
+  }
+  
+  edr = externalSystem "Plataforma EDR" {
+    description "Protección de endpoints."
+  }
+
+  artemis = system "Plataforma de Gestión de Inteligencia (Artemis)" {
+    description "Sistema centralizado de gestión, validación y distribución de Indicadores de Compromiso."
+
+    proxy = container "Servidor Proxy Inverso" {
+      technology "IIS"
+      description "Termina TLS/HTTPS y enruta el tráfico interno."
+    }
+
+    appServer = container "Servidor de Aplicaciones" {
+      technology "Waitress WSGI"
+      description "Procesa concurrencia y actúa como puente HTTP a Python."
+    }
+
+    frontend = container "Aplicación Frontend (SPA)" {
+      technology "JavaScript, HTML, CSS"
+      description "Provee el Dashboard e interfaz gráfica en el navegador del usuario."
+    }
+
+    webApp = container "Aplicación Backend Core" {
+      technology "Python, Django REST"
+      description "API REST segura, motor de validación, deduplicación y ruteo."
+      
+      authCtrl = component "Auth Controller" {
+        technology "Django REST"
+        description "Maneja autenticación y generación de tokens."
+      }
+      inCtrl = component "Ingestion Controllers" {
+        technology "Django REST"
+        description "Recibe solicitudes HTTP para cargas masivas y gestión manual."
+      }
+      pubApi = component "Publisher API" {
+        technology "Django REST"
+        description "Expone endpoints seguros para publicar la lista de IoCs aprobados."
+      }
+      svc = component "Ingestion Service" {
+        technology "Python"
+        description "Core del negocio: aplica reglas de ruteo, cruza datos y evita duplicidad."
+      }
+      utils = component "Detection Utils" {
+        technology "Python / RegEx"
+        description "Librería estática que clasifica si un texto es IP, URL, Dominio o Hash."
+      }
+      orm = component "Data Access Layer (ORM)" {
+        technology "Django Models"
+        description "Capa de abstracción que mapea entidades (IocEntry, Tool, IocTool)."
+      }
+    }
+
+    db = database "Base de Datos" {
+      technology "MS SQL Server"
+      description "Persiste IoCs, configuraciones de herramientas y auditoría transaccional ACID."
+    }
+  }
+
+  // --- Relaciones de Alto Nivel ---
+  admin -> frontend "Interactúa con la interfaz"
+  frontend -> proxy "Realiza peticiones API"
+  firewall -> proxy "Consume feed"
+  ips -> proxy "Consume feed"
+  edr -> proxy "Consume feed"
+
+  // --- Relaciones de Contenedores ---
+  proxy -> appServer "Enruta tráfico interno"
+  appServer -> webApp "Ejecuta subprocesos"
+  webApp -> db "Lee/escribe transacciones"
+
+  // --- Relaciones Internas del Backend (Nivel 3) ---
+  appServer -> authCtrl "Invoca endpoint de autenticación"
+  appServer -> inCtrl "Invoca endpoint de ingesta"
+  appServer -> pubApi "Invoca endpoint de descarga"
+  
+  inCtrl -> svc "Envía datos crudos para procesar a"
+  svc -> utils "Clasifica cadenas de texto usando"
+  svc -> orm "Verifica reglas y guarda mediante"
+  pubApi -> orm "Extrae indicadores activos desde"
+  orm -> db "Ejecuta consultas en"
+}
+
+views {
+  view systemContext {
+    title "Diagrama Nivel 1: Contexto de Sistema (Artemis)"
+    include *
+    exclude artemis.*
+  }
+
+  view containerDiagram {
+    title "Diagrama Nivel 2: Contenedores"
+    include *
+    exclude artemis.webApp.*
+  }
+
+  view componentDiagram {
+    title "Diagrama Nivel 3: Componentes (Aplicación Web Core)"
+    include *
+  }
+}

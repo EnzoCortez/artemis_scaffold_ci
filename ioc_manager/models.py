@@ -89,6 +89,7 @@ class IocEntry(models.Model):
     # Campos adicionales útiles
     source = models.CharField(max_length=100, null=True, blank=True)
     upload_batch = models.CharField(max_length=36, null=True, blank=True, db_index=True)
+    ingestion_attempts = models.IntegerField(default=1)
 
     class Meta:
 
@@ -141,11 +142,18 @@ class IocTool(models.Model):
 class IocLoadBatch(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     source = models.CharField(max_length=50)
+    file_name = models.CharField(max_length=255, null=True, blank=True)
     total = models.IntegerField(default=0)
     inserted = models.IntegerField(default=0)
     duplicated = models.IntegerField(default=0)
+    rejected = models.IntegerField(default=0)
+    uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='upload_batches')
+    batch_uuid = models.CharField(max_length=36, null=True, blank=True, db_index=True)
 
-
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Lote de Carga"
+        verbose_name_plural = "Lotes de Carga"
 
     def __str__(self):
         return f"Lote {self.id} - {self.source}"

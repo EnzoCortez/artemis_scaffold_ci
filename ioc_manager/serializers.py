@@ -15,7 +15,7 @@ class IocEntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = IocEntry
-        fields = ['id', 'ioc_type', 'ioc_type_id', 'value', 'status', 'created_at', 'tools']
+        fields = ['id', 'ioc_type', 'ioc_type_id', 'value', 'status', 'created_at', 'tools', 'ingestion_attempts']
         
     def get_tools(self, obj):
         # obj.tools returns IocTool instances because related_name='tools'

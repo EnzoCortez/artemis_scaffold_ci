@@ -4,7 +4,8 @@ from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
-from django.db.models import Count
+from django.db.models import Count, Q
+from django.utils.dateparse import parse_date
 from .models import IocEntry, IocType
 
 class DBLogSizeView(APIView):
@@ -87,18 +88,87 @@ class DashboardStatsView(APIView):
 
     def get(self, request):
         """Retorna estadísticas para los gráficos."""
+        start_date = request.query_params.get('start')
+        end_date = request.query_params.get('end')
+
+        qs = IocEntry.objects.all()
+
+        if start_date:
+            parsed_start = parse_date(start_date)
+            if parsed_start:
+                qs = qs.filter(created_at__gte=parsed_start)
+        
+        if end_date:
+            parsed_end = parse_date(end_date)
+            if parsed_end:
+                # Se suma un día implícitamente o se busca <=
+                # Como created_at es datetime, <= a la fecha (medianoche) no incluirá lo del día, pero usaremos date()
+                qs = qs.filter(created_at__date__lte=parsed_end)
+
         # 1. Total IOCs
-        total_iocs = IocEntry.objects.count()
+        total_iocs = qs.count()
+        total_bloqueados = qs.filter(status=IocEntry.STATUS_BLOCKED).count()
+        total_depurados = qs.filter(status=IocEntry.STATUS_CLEARED).count()
         
         # 2. Por Tipo (Pie Chart)
-        by_type = list(IocEntry.objects.values('ioc_type__name').annotate(count=Count('id')).order_by('-count'))
+        by_type = list(qs.values('ioc_type__name').annotate(count=Count('id')).order_by('-count'))
         
         # 3. Por Estado (Bar/Doughnut Chart)
-        # MSSQL Fix: Explicitly order by (e.g. status) to avoid default ordering on 'created_at' which breaks GROUP BY
-        by_status = list(IocEntry.objects.values('status').annotate(count=Count('id')).order_by('status'))
+        by_status = list(qs.values('status').annotate(count=Count('id')).order_by('status'))
+
+        # 4. Por Mes cronológicamente (Line/Bar Chart)
+        from django.db.models.functions import TruncMonth
+        by_month = list(
+            qs.annotate(month=TruncMonth('created_at'))
+            .values('month')
+            .annotate(
+                count=Count('id'),
+                blocked_count=Count('id', filter=Q(status=IocEntry.STATUS_BLOCKED))
+            )
+            .order_by('month')
+        )
+        
+        # Format month explicitly for JSON serialization
+        formatted_by_month = [
+            {
+                "month": m["month"].strftime("%Y-%m") if m["month"] else "Unknown", 
+                "count": m["count"],
+                "blocked_count": m["blocked_count"]
+            }
+            for m in by_month
+        ]
 
         return Response({
             "total": total_iocs,
+            "total_bloqueados": total_bloqueados,
+            "total_depurados": total_depurados,
             "by_type": by_type,
-            "by_status": by_status
+            "by_status": by_status,
+            "by_month": formatted_by_month
         })
+
+
+class UploadHistoryView(APIView):
+    """Historial de lotes de carga con datos para gráfico de barras."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import IocLoadBatch
+
+        qs = IocLoadBatch.objects.select_related('uploaded_by').order_by('-created_at')[:50]
+
+        history = []
+        for batch in qs:
+            history.append({
+                "id": batch.id,
+                "source": batch.source,
+                "total": batch.total,
+                "inserted": batch.inserted,
+                "duplicated": batch.duplicated,
+                "rejected": batch.rejected,
+                "uploaded_by": batch.uploaded_by.username if batch.uploaded_by else "Sistema",
+                "created_at": batch.created_at.isoformat() if batch.created_at else None,
+                "batch_uuid": batch.batch_uuid or ""
+            })
+
+        return Response({"history": history})

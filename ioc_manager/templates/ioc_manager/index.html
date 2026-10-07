@@ -8,6 +8,11 @@
   <title>Artemis - Gestión de IoCs</title>
   <link rel="stylesheet" href="{% static 'css/styles.css' %}">
   <script src="{% static 'js/chart.js' %}"></script>
+  <style>
+    /* XP: Estilo global para evitar texto truncado o desbordado en reportes */
+    table { table-layout: fixed; width: 100%; }
+    td, th { word-wrap: break-word; word-break: break-all; white-space: normal; padding: 8px; }
+  </style>
 </head>
 
 <body>
@@ -33,6 +38,39 @@
     <button class="tab-button" onclick="showTab('carga_inicial', this)">Carga Inicial</button>
   </nav>
 
+  <!-- Toggle global de ofuscación para exportaciones -->
+  <div id="defangToggleBar" style="display: flex; align-items: center; justify-content: flex-end; padding: 8px 20px; background: #1a1a2e; border-bottom: 1px solid #333;">
+    <label for="defangToggle" style="display: flex; align-items: center; cursor: pointer; gap: 10px; color: #ccc; font-size: 0.85rem;">
+      <span>🛡️ Exportar con ofuscación (Defanging)</span>
+      <div style="position: relative; width: 44px; height: 24px;">
+        <input type="checkbox" id="defangToggle" style="opacity: 0; width: 0; height: 0;" />
+        <span id="defangSlider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: 0.3s; border-radius: 24px;"
+          onclick="document.getElementById('defangToggle').click();">
+          <span style="position: absolute; content: ''; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: 0.3s; border-radius: 50%; display: block;" id="defangKnob"></span>
+        </span>
+      </div>
+      <span id="defangStatusLabel" style="font-weight: bold; color: #888;">OFF</span>
+    </label>
+  </div>
+
+  <script>
+    document.getElementById('defangToggle').addEventListener('change', function() {
+      const knob = document.getElementById('defangKnob');
+      const slider = document.getElementById('defangSlider');
+      const label = document.getElementById('defangStatusLabel');
+      if (this.checked) {
+        knob.style.transform = 'translateX(20px)';
+        slider.style.backgroundColor = '#059669';
+        label.textContent = 'ON';
+        label.style.color = '#059669';
+      } else {
+        knob.style.transform = 'translateX(0)';
+        slider.style.backgroundColor = '#555';
+        label.textContent = 'OFF';
+        label.style.color = '#888';
+      }
+    });
+  </script>
   <!-- MÓDULO CARGA -->
   <div id="carga" class="tab-content active">
     <div class="section">
@@ -59,7 +97,22 @@
         <button class="action" onclick="cargarNuevos()">Cargar IoCs nuevos</button>
         
         <h4 style="margin-top: 20px; color: #f39c12;">Duplicados detectados:</h4>
-        <ul id="listaDuplicados" style="max-height: 150px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; color: #f39c12;"></ul>
+        <!-- Contenedor para botones superiores -->
+        <div id="matrixControls" style="margin-bottom: 10px; display: none;">
+          <button type="button" class="action secondary" onclick="asignarHerramientasMasivo()">Asignar Seleccionados</button>
+        </div>
+        
+        <!-- Tabla dinámica de Matriz -->
+        <div style="max-height: 350px; overflow-y: auto; overflow-x: auto; border: 1px solid #ccc; margin-bottom: 10px;">
+          <table style="width: 100%; border-collapse: collapse; min-width: 600px;">
+            <thead id="listaDuplicadosHead" style="background-color: #f1f1f1; position: sticky; top: 0;">
+              <!-- Renderizado dinámico en JS -->
+            </thead>
+            <tbody id="listaDuplicadosBody">
+              <!-- Renderizado dinámico en JS -->
+            </tbody>
+          </table>
+        </div>
 
         <h4 style="margin-top: 20px; color: #e74c3c;">Rechazados / No Válidos:</h4>
         <ul id="listaErrores" style="max-height: 150px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; color: #e74c3c;"></ul>
@@ -92,6 +145,11 @@
             <option value="Dominio">Dominio</option>
             <option value="Hash">Hash</option>
           </select>
+          <select id="filterStatus" style="padding: 5px;">
+            <option value="">Estado (Todos)</option>
+            <option value="BLOQUEADO">Bloqueados</option>
+            <option value="DEPURADO">Depurados</option>
+          </select>
           <input type="date" id="filterDateStart" title="Desde" style="padding: 4px;" />
           <input type="date" id="filterDateEnd" title="Hasta" style="padding: 4px;" />
           <button class="action" onclick="buscarManual()">Buscar</button>
@@ -108,21 +166,29 @@
         </div>
       </div>
 
-      <div class="small-note">Modo normal: se muestran <strong>50</strong> primeros IoCs. Si busca por TXT se muestran
-        <strong>todos</strong> los coincidentes.
+      <div class="small-note">Se muestran <strong>50</strong> registros por página. Use los controles de paginación para navegar.
       </div>
 
       <table id="tablaManual">
         <thead>
           <tr>
-            <th>IoC</th>
-            <th>Tipo de IoC</th>
-            <th>Estado</th>
-            <th>Acción</th>
+            <th style="width: 45%;">IoC</th>
+            <th style="width: 15%;">Tipo de IoC</th>
+            <th style="width: 15%;">Estado</th>
+            <th style="width: 10%; text-align: center;">Intentos</th>
+            <th style="width: 15%;">Acción</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+
+      <!-- Controles de Paginación -->
+      <div id="paginacionControles" style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 15px; padding: 10px; background: #1a2332; border-radius: 6px;">
+        <button class="action secondary" id="btnPagPrev" onclick="cambiarPagina(-1)" disabled style="padding: 6px 14px;">◀ Anterior</button>
+        <span id="paginacionInfo" style="font-weight: bold; color: #cfd8e3;">Página 1 de 1</span>
+        <button class="action secondary" id="btnPagNext" onclick="cambiarPagina(1)" disabled style="padding: 6px 14px;">Siguiente ▶</button>
+        <span style="color: #8899aa; font-size: 0.85em;" id="paginacionTotal"></span>
+      </div>
 
       <div id="msgGestionManual" class="message" style="display:none;"></div>
     </div>
@@ -198,6 +264,7 @@
         <div style="margin-bottom: 15px;">
           <button class="action" onclick="generarReporte()">Generar Reporte Tradicional</button>
           <button class="action secondary" onclick="descargarReporteTotalesHerramientas()" style="margin-left: 10px;">Descargar Totales (TXT)</button>
+          <button class="action secondary" onclick="exportarCsvReportes()" style="background-color: #059669; border-color: #047857; color: white; margin-left: 10px;">Exportar a CSV</button>
         </div>
       </div>
 
@@ -217,23 +284,47 @@
   <!-- MÓDULO MANTENIMIENTO Y DASHBOARD -->
   <div id="mantenimiento" class="tab-content">
     <div class="section">
-      <h3>Dashboard de Métricas</h3>
-      <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-        <!-- Card Resumen -->
-        <div class="card-metric" style="background: #2c3e50; padding: 20px; border-radius: 8px; color: white;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3>Dashboard de Métricas</h3>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <label style="font-size: 0.9em; font-weight: bold;">Desde:</label>
+          <input type="date" id="dashStartDate" class="input-text" style="padding: 5px;">
+          <label style="font-size: 0.9em; font-weight: bold;">Hasta:</label>
+          <input type="date" id="dashEndDate" class="input-text" style="padding: 5px;">
+          <button class="action" onclick="loadDashboard()">Actualizar Gráficos</button>
+        </div>
+      </div>
+      <!-- Fila 1: KPIs -->
+      <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 30px;">
+        <div class="card-metric" style="background: #2c3e50; padding: 20px; border-radius: 8px; color: white; min-width: 150px;">
           <h4>Total IoCs</h4>
           <p id="dashTotal" style="font-size: 2.5em; font-weight: bold; margin: 0;">0</p>
         </div>
-        <!-- Chart 1 -->
-        <div style="flex: 1; min-width: 300px; height: 350px;">
+        <div class="card-metric" style="background: #e74c3c; padding: 20px; border-radius: 8px; color: white; min-width: 150px;">
+          <h4>Bloqueados</h4>
+          <p id="dashBloqueados" style="font-size: 2.5em; font-weight: bold; margin: 0;">0</p>
+        </div>
+        <div class="card-metric" style="background: #27ae60; padding: 20px; border-radius: 8px; color: white; min-width: 150px;">
+          <h4>Depurados</h4>
+          <p id="dashDepurados" style="font-size: 2.5em; font-weight: bold; margin: 0;">0</p>
+        </div>
+      </div>
+
+      <!-- Fila 2: Gráficos -->
+      <div style="display: flex; flex-wrap: wrap; gap: 40px;">
+        <!-- Chart 1 (Mensual) -->
+        <div style="flex: 1; min-width: 300px; max-width: 33%; height: 350px;">
+          <canvas id="chartMonth"></canvas>
+        </div>
+        <!-- Chart 2 (Tipo) -->
+        <div style="flex: 1; min-width: 300px; max-width: 33%; height: 350px;">
           <canvas id="chartType"></canvas>
         </div>
-        <!-- Chart 2 -->
-        <div style="flex: 1; min-width: 300px; height: 350px;">
+        <!-- Chart 3 (Estado) -->
+        <div style="flex: 1; min-width: 300px; max-width: 33%; height: 350px;">
           <canvas id="chartStatus"></canvas>
         </div>
       </div>
-      <button class="action" onclick="loadDashboard()">Actualizar Gráficos</button>
     </div>
 
     <hr style="margin: 30px 0; border-color: #444;">
@@ -301,7 +392,7 @@
       <p style="margin-bottom: 8px;"><strong>Valor:</strong> <span id="mdlValue" style="color:#fff;"></span></p>
       <p style="margin-bottom: 15px;"><strong>Ingresado:</strong> <span id="mdlDate" style="color:#94a3b8;"></span></p>
       <p style="margin-bottom: 5px; font-weight: bold;">Herramientas:</p>
-      <ul id="mdlTools" style="margin-top: 5px; background: #0f172a; padding: 10px 10px 10px 25px; border-radius: 5px; border: 1px solid #334155;"></ul>
+      <ul id="mdlTools" style="margin-top: 5px; background: #0f172a; padding: 10px 10px 10px 25px; border-radius: 5px; border: 1px solid #334155; max-height: 200px; overflow-y: auto;"></ul>
       <div style="text-align: right; margin-top: 20px;">
         <button class="action secondary" style="padding: 8px 16px; font-weight: bold;" onclick="document.getElementById('modalDetalles').style.display='none'">Cerrar</button>
       </div>
@@ -316,34 +407,63 @@
   <!-- script inline: extiende/sobrescribe funciones para Gestión sin tocar scripts.js -->
   <script>
     (function () {
-      // límite por defecto
-      const DEFAULT_LIMIT = 50;
+      // Estado de paginación
+      window._currentPage = 1;
+      window._totalPages = 1;
+      window._lastSearchParams = {};
 
-      // Reemplazamos refreshIocList para aplicar límite 50 en vista normal
-      window.refreshIocList = async function () {
+      function updatePaginationUI(page, totalPages, count) {
+        window._currentPage = page;
+        window._totalPages = totalPages;
+        document.getElementById('paginacionInfo').textContent = `Página ${page} de ${totalPages}`;
+        document.getElementById('paginacionTotal').textContent = `(${count} registros totales)`;
+        document.getElementById('btnPagPrev').disabled = (page <= 1);
+        document.getElementById('btnPagNext').disabled = (page >= totalPages);
+      }
+
+      async function fetchIocsPage(params = {}) {
         const tbody = document.querySelector('#tablaManual tbody');
         const msgEl = document.getElementById('msgGestionManual');
         if (!tbody) return;
         tbody.innerHTML = '';
+
+        const urlObj = new URL('/api/iocs/', window.location.origin);
+        Object.keys(params).forEach(k => {
+          if (params[k]) urlObj.searchParams.set(k, params[k]);
+        });
+
         try {
-          const res = await apiFetch('/api/iocs/');
+          const res = await apiFetch(urlObj.toString());
           if (!res.ok) {
-            showMessage(msgEl || 'msgGestionManual', 'Error al obtener IoCs de la API', 'err');
+            showMessage(msgEl, 'Error al obtener IoCs de la API', 'err');
             return;
           }
           const data = await res.json();
-          const arr = Array.isArray(data) ? data : (data.results || []);
-          // aplicar límite
-          const limited = arr.slice(0, DEFAULT_LIMIT);
-          renderIocsIntoTable(limited);
-          showMessage(msgEl || 'msgGestionManual', `Mostrando ${limited.length} de ${arr.length} IoCs (por defecto solo 50). Para ver coincidencias completas, use 'Buscar por TXT'.`, 'ok');
+          const arr = data.results || [];
+          renderIocsIntoTable(arr);
+          updatePaginationUI(data.page || 1, data.total_pages || 1, data.count || 0);
+          showMessage(msgEl, `Mostrando ${arr.length} de ${data.count || 0} registros (página ${data.page} de ${data.total_pages})`, 'ok');
         } catch (err) {
-          console.error('refreshIocList error', err);
-          showMessage(msgEl || 'msgGestionManual', 'Error cargando lista: ' + (err.message || err), 'err');
+          console.error('fetchIocsPage error', err);
+          showMessage(msgEl, 'Error cargando lista: ' + (err.message || err), 'err');
         }
+      }
+
+      // Navegar entre páginas
+      window.cambiarPagina = function (delta) {
+        const newPage = window._currentPage + delta;
+        if (newPage < 1 || newPage > window._totalPages) return;
+        window._lastSearchParams.page = newPage;
+        fetchIocsPage(window._lastSearchParams);
       };
 
+      // Refrescar (página 1, sin filtros)
+      window.refreshIocList = function () {
+        window._lastSearchParams = { page: 1 };
+        fetchIocsPage(window._lastSearchParams);
+      };
 
+      // Auth check
       (async () => {
         const res = await fetch('/api/iocs/');
         if (res.status === 401) {
@@ -351,39 +471,140 @@
         }
       })();
 
-
-      // Reemplazamos buscarManual para mantener compatibilidad y mostrar máximo 50 también
-      window.buscarManual = async function () {
+      // Buscar con filtros (resetea a página 1)
+      window.buscarManual = function () {
         const q = document.getElementById('searchIoc').value.trim();
         const fType = document.getElementById('filterType').value.trim();
+        const fStatus = document.getElementById('filterStatus').value.trim();
         const fStart = document.getElementById('filterDateStart').value;
         const fEnd = document.getElementById('filterDateEnd').value;
 
-        const tbody = document.querySelector('#tablaManual tbody');
-        const msgEl = document.getElementById('msgGestionManual') || null;
-        if (!tbody) return showMessage(msgEl || 'msgGestionManual', 'Tabla manual no encontrada', 'err');
-        tbody.innerHTML = '';
+        window._lastSearchParams = { page: 1 };
+        if (q) window._lastSearchParams.search = q;
+        if (fType) window._lastSearchParams.type = fType;
+        if (fStatus) window._lastSearchParams.status = fStatus;
+        if (fStart) window._lastSearchParams.date_start = fStart;
+        if (fEnd) window._lastSearchParams.date_end = fEnd;
+
+        fetchIocsPage(window._lastSearchParams);
+      };
+
+      window.exportarCsvEstados = async function () {
+        const q = document.getElementById('searchIoc').value.trim();
+        const fType = document.getElementById('filterType').value.trim();
+        const fStatus = document.getElementById('filterStatus').value.trim();
+        const fStart = document.getElementById('filterDateStart').value;
+        const fEnd = document.getElementById('filterDateEnd').value;
+
+        const urlObj = new URL('/api/iocs/', window.location.origin);
+        if (q) urlObj.searchParams.set('search', q);
+        if (fType) urlObj.searchParams.set('type', fType);
+        if (fStatus) urlObj.searchParams.set('status', fStatus);
+        if (fStart) urlObj.searchParams.set('date_start', fStart);
+        if (fEnd) urlObj.searchParams.set('date_end', fEnd);
+        urlObj.searchParams.set('page_size', '10000'); // Exportar todos
 
         try {
-          const urlObj = new URL('/api/iocs/', window.location.origin);
-          if (q) urlObj.searchParams.set('search', q);
-          if (fType) urlObj.searchParams.set('type', fType);
-          if (fStart) urlObj.searchParams.set('date_start', fStart);
-          if (fEnd) urlObj.searchParams.set('date_end', fEnd);
-
           const res = await apiFetch(urlObj.toString());
-          if (!res.ok) {
-            const txt = await res.text();
-            return showMessage(msgEl || 'msgGestionManual', `Error buscando: ${res.status} ${txt}`, 'err');
-          }
+          if (!res.ok) throw new Error("Error obteniendo datos para CSV");
           const data = await res.json();
-          const arr = Array.isArray(data) ? data : (data.results || []);
-          const limited = arr.slice(0, DEFAULT_LIMIT);
-          renderIocsIntoTable(limited);
-          showMessage(msgEl || 'msgGestionManual', `Resultados: ${arr.length} (mostrando ${limited.length}). Para ver todos los que coincidan, usa 'Buscar por TXT'.`, 'ok');
+          const arr = data.results || [];
+          
+          if(arr.length === 0){
+             alert("No hay resultados para exportar");
+             return;
+          }
+
+          // Preparar datos para CSV
+          const headers = ['Valor', 'Tipo', 'Estado', 'Intentos', 'Fecha_Creacion'];
+          const items = arr.map(ioc => ({
+            'Valor': ioc.value,
+            'Tipo': (ioc.ioc_type && ioc.ioc_type.name) ? ioc.ioc_type.name : 'Desconocido',
+            'Estado': ioc.status,
+            'Intentos': ioc.ingestion_attempts || 0,
+            'Fecha_Creacion': ioc.created_at ? new Date(ioc.created_at).toLocaleString() : ''
+          }));
+
+          const exportRes = await apiFetch('/api/export/csv/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items, headers, filename: 'exportacion_estados.csv' })
+          });
+
+          if (!exportRes.ok) throw new Error("Error al generar el CSV en el servidor");
+          
+          const blob = await exportRes.blob();
+          const a = document.createElement('a');
+          a.href = window.URL.createObjectURL(blob);
+          a.download = 'exportacion_estados.csv';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+
         } catch (err) {
-          showMessage(msgEl || 'msgGestionManual', 'Error conexión búsqueda: ' + (err.message || err), 'err');
           console.error(err);
+          alert('Error exportando CSV: ' + err.message);
+        }
+      };
+
+      window.exportarCsvReportes = async function () {
+        const fStart = document.getElementById('fechaInicio').value;
+        const fEnd = document.getElementById('fechaFin').value;
+        const fSource = document.getElementById('fuenteSelectReport').value;
+        const fSourceCustom = document.getElementById('fuenteCustomReport').value.trim();
+        const finalSource = (fSource === 'Otro') ? fSourceCustom : fSource;
+        const fType = document.getElementById('filtroIocTypeReport').value;
+
+        const urlObj = new URL('/api/iocs/', window.location.origin);
+        if (fType) urlObj.searchParams.set('type', fType);
+        if (fStart) urlObj.searchParams.set('date_start', fStart);
+        if (fEnd) urlObj.searchParams.set('date_end', fEnd);
+        urlObj.searchParams.set('page_size', '10000'); // Exportar todos
+
+        try {
+          const res = await apiFetch(urlObj.toString());
+          if (!res.ok) throw new Error("Error obteniendo datos para CSV");
+          const data = await res.json();
+          let arr = data.results || [];
+          
+          if (finalSource) {
+             arr = arr.filter(ioc => ioc.source && ioc.source.toLowerCase() === finalSource.toLowerCase());
+          }
+
+          if(arr.length === 0){
+             alert("No hay resultados para exportar");
+             return;
+          }
+
+          const headers = ['Valor', 'Tipo', 'Estado', 'Intentos', 'Herramientas', 'Fecha_Creacion'];
+          const items = arr.map(ioc => ({
+            'Valor': ioc.value,
+            'Tipo': (ioc.ioc_type && ioc.ioc_type.name) ? ioc.ioc_type.name : 'Desconocido',
+            'Estado': ioc.status,
+            'Intentos': ioc.ingestion_attempts || 0,
+            'Herramientas': (ioc.tools || []).map(t => typeof t === 'object' ? (t.tool_name || t.tool) : t).join(', '),
+            'Fecha_Creacion': ioc.created_at ? new Date(ioc.created_at).toLocaleString() : ''
+          }));
+
+          const exportRes = await apiFetch('/api/export/csv/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items, headers, filename: 'reporte_exportacion.csv' })
+          });
+
+          if (!exportRes.ok) throw new Error("Error al generar el CSV en el servidor");
+          
+          const blob = await exportRes.blob();
+          const a = document.createElement('a');
+          a.href = window.URL.createObjectURL(blob);
+          a.download = 'reporte_exportacion.csv';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+
+        } catch (err) {
+          console.error(err);
+          alert('Error exportando CSV: ' + err.message);
         }
       };
 
@@ -437,10 +658,22 @@
           // 4️⃣ Construir filas finales
           const rows = values.map(v => {
             const ioc = foundMap.get(v);
+            if (ioc) {
+              return {
+                ...ioc,
+                value: ioc.value,
+                tipo: (ioc.ioc_type && (ioc.ioc_type.name || ioc.ioc_type)) || detectarTipoIoc(v),
+                status: ioc.status || 'NO EXISTE',
+                intentos: ioc.ingestion_attempts || 0
+              };
+            }
             return {
               value: v,
-              tipo: ioc?.ioc_type || detectarTipoIoc(v),
-              status: ioc?.status || 'NO EXISTE'
+              tipo: detectarTipoIoc(v),
+              status: 'NO EXISTE',
+              intentos: 0,
+              tools: [],
+              created_at: null
             };
           });
 
@@ -475,20 +708,73 @@
           const value = item.value || item.ioc || item.name || '';
           const tipo = (item.ioc_type && (item.ioc_type.name || item.ioc_type)) || item.tipo || detectarTipoIoc(value);
           const status = item.status || item.estado || item.state || item.status || 'N/A';
+          const intentos = item.ingestion_attempts || item.intentos || 0;
 
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td>${value}</td>
             <td>${tipo}</td>
             <td>${status}</td>
+            <td style="text-align: center;"><b>${intentos}</b></td>
             <td>
-              <button type="button" onclick="promptChangeState(${JSON.stringify(item.id || item.pk || value).replace(/"/g, '&quot;')})">Cambiar</button>
+              <button type="button" onclick="toggleIocState(this, ${JSON.stringify(item.id || item.pk || value).replace(/"/g, '&quot;')}, '${status}')">Cambiar</button>
               <button type="button" class="action secondary" style="padding: 4px; margin-left: 5px;" onclick="mostrarDetalles(this.dataset.item)" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>Detalles</button>
             </td>
           `;
           tbody.appendChild(tr);
         });
       }
+
+      window.toggleIocState = async function(btn, iocId, currentStatus) {
+        if (currentStatus === 'NO EXISTE') {
+          alert('El indicador no existe en la base de datos y no se puede cambiar su estado.');
+          return;
+        }
+        const nextStatus = currentStatus === 'BLOQUEADO' ? 'DEPURADO' : 'BLOQUEADO';
+        
+        btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = '...';
+        
+        const msgEl = document.getElementById('msgGestionManual');
+        try {
+          const res = await apiFetch('/api/change-state/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ioc_id: iocId, new_state: nextStatus })
+          });
+          if (!res.ok) {
+            const txt = await res.text();
+            showMessage(msgEl, `Error cambiando estado: ${res.status} ${txt}`, 'err');
+            return;
+          }
+          const data = await res.json();
+          showMessage(msgEl, data.detail || 'Estado actualizado', 'ok');
+          
+          // Actualizar visualmente la fila
+          const tr = btn.closest('tr');
+          if (tr) {
+            tr.cells[2].textContent = nextStatus;
+            
+            // Actualizar data-item del botón Detalles de la misma fila
+            const detBtn = tr.querySelector('button[onclick^="mostrarDetalles"]');
+            if (detBtn) {
+              const itemData = JSON.parse(detBtn.getAttribute('data-item'));
+              itemData.status = nextStatus;
+              detBtn.setAttribute('data-item', JSON.stringify(itemData));
+            }
+          }
+          
+          // Actualizar el onclick del botón Cambiar
+          btn.setAttribute('onclick', `toggleIocState(this, ${JSON.stringify(iocId).replace(/"/g, '&quot;')}, '${nextStatus}')`);
+        } catch (err) {
+          showMessage(msgEl, 'Error de conexión: ' + (err.message || err), 'err');
+          console.error(err);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalText;
+        }
+      };
 
       window.mostrarDetalles = function(itemStr) {
         try {
@@ -501,7 +787,7 @@
           if (item.tools && item.tools.length > 0) {
             item.tools.forEach(t => {
               const li = document.createElement('li');
-              li.textContent = t;
+              li.textContent = typeof t === 'object' ? (t.tool_name || t.tool) : t;
               toolsUl.appendChild(li);
             });
           } else {
@@ -536,14 +822,55 @@
 
       window.loadDashboard = async function () {
         const btn = document.querySelector('button[onclick="loadDashboard()"]');
-        btn.disabled = true; btn.textContent = 'Cargando...';
+        if (btn) { btn.disabled = true; btn.textContent = 'Cargando...'; }
+        
+        const startDate = document.getElementById('dashStartDate').value;
+        const endDate = document.getElementById('dashEndDate').value;
+        let url = '/api/stats/dashboard/';
+        const params = new URLSearchParams();
+        if (startDate) params.append('start', startDate);
+        if (endDate) params.append('end', endDate);
+        if (params.toString()) url += '?' + params.toString();
+
         try {
-          const res = await apiFetch('/api/stats/dashboard/');
+          const res = await apiFetch(url);
           if (!res.ok) throw new Error("Error cargando estadísticas");
           const data = await res.json();
 
-          // 1. Total
+          // 1. Totales
           document.getElementById('dashTotal').textContent = data.total;
+          document.getElementById('dashBloqueados').textContent = data.total_bloqueados;
+          document.getElementById('dashDepurados').textContent = data.total_depurados;
+
+          // Chart 0: Mes cronológico (Bar)
+          const ctxMonth = document.getElementById('chartMonth').getContext('2d');
+          if (window.chartInstanceMonth) window.chartInstanceMonth.destroy();
+
+          const labelsMonth = data.by_month.map(x => x.month);
+          const valuesMonth = data.by_month.map(x => x.count);
+          const blockedMonth = data.by_month.map(x => x.blocked_count);
+
+          window.chartInstanceMonth = new Chart(ctxMonth, {
+            type: 'bar',
+            data: {
+              labels: labelsMonth,
+              datasets: [
+                {
+                  label: 'Ingestados',
+                  data: valuesMonth,
+                  backgroundColor: '#3498db',
+                  borderWidth: 1
+                },
+                {
+                  label: 'Bloqueados',
+                  data: blockedMonth,
+                  backgroundColor: '#e74c3c',
+                  borderWidth: 1
+                }
+              ]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Ingesta Mensual' } } }
+          });
 
           // 2. Chart Type (Pie/Doughnut)
           const ctxType = document.getElementById('chartType').getContext('2d');
@@ -584,14 +911,16 @@
                 borderWidth: 1
               }]
             },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Distribución por Estado' } } }
+            options: {
+              responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Distribución por Estado' } }
+            }
           });
 
-        } catch (e) {
-          console.error(e);
-          alert("Error cargando dashboard: " + e.message);
+        } catch (err) {
+          console.error(err);
+          alert('Error: ' + err.message);
         } finally {
-          btn.disabled = false; btn.textContent = 'Actualizar Gráficos';
+          if (btn) { btn.disabled = false; btn.textContent = 'Actualizar Gráficos'; }
         }
       };
 

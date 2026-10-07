@@ -22,7 +22,7 @@ from rest_framework import status, permissions
 from rest_framework import serializers as drf_serializers
 
 from ioc_manager.services.ingestion_service import validate_and_ingest
-from .utils import associate_iocs_with_allowed_tools_bulk, detect_ioc_type, validate_tool_accepts_ioc
+from .utils import associate_iocs_with_allowed_tools_bulk, detect_ioc_type, validate_tool_accepts_ioc, remove_defanging, apply_defanging
 from .models import (
     IocEntry,
     IocType,
@@ -79,13 +79,15 @@ class ValidateUploadView(APIView):
         skipped = []
         clean_values = []
 
-        # 2️⃣ Validación y limpieza
+        # 2️⃣ Validación, limpieza y desofuscación
         for line in lines:
             total += 1
-            if is_invalid_value(line):
+            # Aplicar desofuscación antes de cualquier procesamiento
+            cleaned_line = remove_defanging(line)
+            if is_invalid_value(cleaned_line):
                 skipped.append({'line': line, 'reason': 'invalid/placeholder'})
             else:
-                clean_values.append(line)
+                clean_values.append(cleaned_line)
 
         # eliminar duplicados del archivo
         clean_values = list(set(clean_values))
@@ -117,8 +119,21 @@ class ValidateUploadView(APIView):
         duplicates = []
         new_items = []
 
-        # Cargar herramientas disponibles para validar reglas
-        all_tool_names = list(Tool.objects.values_list('name', flat=True))
+        # Cargar herramientas disponibles y sus reglas
+        all_tools_qs = Tool.objects.prefetch_related('indicator_rules__ioc_type')
+        all_tool_names = []
+        tools_info = []
+
+        for t in all_tools_qs:
+            all_tool_names.append(t.name)
+            compatible_types = [
+                rule.ioc_type.name for rule in t.indicator_rules.all() if rule.can_ingest
+            ]
+            tools_info.append({
+                "id": t.id,
+                "name": t.name,
+                "compatible_types": compatible_types
+            })
 
         # 5️⃣ Clasificación final
         for value in clean_values:
@@ -131,7 +146,8 @@ class ValidateUploadView(APIView):
                 skipped.append({'line': value, 'reason': 'No pudo detectar tipo (formato no soportado)'})
                 continue
                 
-            if value in existing_map:
+            # Si existe en BD Y ya tiene al menos una herramienta, es duplicado
+            if value in existing_map and tools_map.get(existing_map[value].id):
                 ioc = existing_map[value]
                 duplicates.append({
                     'value': ioc.value,
@@ -158,6 +174,7 @@ class ValidateUploadView(APIView):
 
         # 6️⃣ Respuesta optimizada
         return Response({
+            'tools_info': tools_info,
             'duplicates': duplicates,
             'new': new_items,
             'skipped': skipped,
@@ -271,6 +288,11 @@ class LoadNewIocsView(APIView):
             )
             inserted.append(value)
 
+        # 🔹 Incrementar intentos para los duplicados
+        if existing:
+            from django.db.models import F
+            IocEntry.objects.filter(value__in=existing).update(ingestion_attempts=F('ingestion_attempts') + 1)
+
         # 🔹 Inserción masiva
         IocEntry.objects.bulk_create(
             to_create,
@@ -287,6 +309,19 @@ class LoadNewIocsView(APIView):
         associate_iocs_with_allowed_tools_bulk(
             list(created_iocs),
             user=request.user
+        )
+
+        # 📋 Registrar lote en historial
+        from .models import IocLoadBatch
+        IocLoadBatch.objects.create(
+            source=fuente,
+            file_name=request.data.get('file_name') or request.data.get('filename') or '',
+            total=len(items),
+            inserted=len(created_iocs),
+            duplicated=len(existing),
+            rejected=len(errors),
+            uploaded_by=request.user,
+            batch_uuid=batch_id
         )
 
         return Response({
@@ -339,25 +374,159 @@ class IocBulkSearchView(APIView):
             IocEntry.objects
             .filter(value__in=values)
             .select_related("ioc_type")
-            .only("value", "status", "ioc_type__name")
+            .prefetch_related("tools")
+            .only("value", "status", "ioc_type__name", "created_at", "ingestion_attempts")
         )
 
         # 🔹 Respuesta liviana (NO SERIALIZER)
         results = [
             {
+                "id": ioc.id,
                 "value": ioc.value,
                 "status": ioc.status,
-                "ioc_type": ioc.ioc_type.name if ioc.ioc_type else ""
+                "ioc_type": ioc.ioc_type.name if ioc.ioc_type else "",
+                "created_at": ioc.created_at.isoformat() if ioc.created_at else None,
+                "ingestion_attempts": getattr(ioc, "ingestion_attempts", 0),
+                "tools": [t.tool.name for t in ioc.tools.all() if t.tool]
             }
             for ioc in qs
         ]
 
         return Response({"results": results}, status=status.HTTP_200_OK)
 
+class AssignToolManualView(APIView):
+    """
+    POST /api/iocs/assign-tool-manual/
+    Body:
+    {
+        "value": "ioc_value",
+        "tool_name": "WAF",
+        "fuente": "IBM"
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        value = request.data.get("value", "").strip()
+        tool_name = request.data.get("tool_name", "").strip()
+        fuente = request.data.get("fuente", "Manual").strip()
+
+        if not value or not tool_name:
+            return Response({"detail": "Falta value o tool_name"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            ioc = IocEntry.objects.get(value=value)
+        except IocEntry.DoesNotExist:
+            return Response({"detail": "El IoC no existe en la base de datos"}, status=status.HTTP_404_NOT_FOUND)
+
+        from .models import Tool
+        tool, _ = Tool.objects.get_or_create(name=tool_name)
+
+        if not validate_tool_accepts_ioc(tool, ioc):
+            return Response({"detail": f"La herramienta {tool.name} no acepta IoCs tipo {ioc.ioc_type.name}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .models import IocTool
+        if IocTool.objects.filter(ioc=ioc, tool=tool).exists():
+            return Response({"detail": "El IoC ya está asignado a esta herramienta"}, status=status.HTTP_400_BAD_REQUEST)
+
+        IocTool.objects.create(
+            ioc=ioc,
+            tool=tool,
+            status='Ingestado',
+            detail=f'Asignación manual. Fuente: {fuente}'
+        )
+
+        return Response({"detail": "Herramienta asignada correctamente"}, status=status.HTTP_200_OK)
+
+
+class AssignToolBulkView(APIView):
+    """
+    POST /api/iocs/assign-tool-bulk/
+    Body:
+    {
+        "assignments": [
+            {"value": "1.1.1.1", "tool_id": 1},
+            {"value": "evil.com", "tool_id": 2}
+        ]
+    }
+    Asigna múltiples IoCs a múltiples herramientas sin reingestar.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        assignments = request.data.get("assignments", [])
+        
+        if not assignments:
+            return Response({"detail": "Faltan assignments"}, status=status.HTTP_400_BAD_REQUEST)
+
+        values = list(set([a.get("value") for a in assignments if a.get("value")]))
+        tool_ids = list(set([a.get("tool_id") for a in assignments if a.get("tool_id")]))
+
+        # Obtener IoCs existentes
+        iocs = IocEntry.objects.filter(value__in=values).select_related("ioc_type")
+        ioc_map = {ioc.value: ioc for ioc in iocs}
+
+        # Obtener herramientas
+        tools = Tool.objects.filter(id__in=tool_ids)
+        tool_map = {tool.id: tool for tool in tools}
+
+        # Obtener relaciones existentes para evitar duplicados
+        existing_links = set(
+            IocTool.objects.filter(
+                ioc__value__in=values,
+                tool__in=tools
+            ).values_list("ioc__value", "tool_id")
+        )
+
+        assigned = 0
+        skipped = 0
+        errors = []
+
+        bulk_create_list = []
+        for item in assignments:
+            val = item.get("value")
+            t_id = item.get("tool_id")
+            
+            ioc = ioc_map.get(val)
+            tool = tool_map.get(t_id)
+
+            if not ioc or not tool:
+                errors.append({"value": val, "reason": f"IoC o Tool (ID: {t_id}) no encontrados"})
+                continue
+
+            if (val, tool.id) in existing_links:
+                skipped += 1
+                continue
+
+            # Validar compatibilidad tipo-herramienta
+            is_valid, reason = validate_tool_accepts_ioc(tool.name, val)
+            if not is_valid:
+                errors.append({"value": val, "reason": f"No compatible con {tool.name}: {reason}"})
+                continue
+
+            bulk_create_list.append(IocTool(
+                ioc=ioc,
+                tool=tool,
+                status='Ingestado',
+                detail=f'Asignación masiva (matriz) por {request.user.username}'
+            ))
+            # Agregar temporalmente a existing_links para evitar duplicados dentro del mismo request
+            existing_links.add((val, tool.id))
+            assigned += 1
+
+        if bulk_create_list:
+            IocTool.objects.bulk_create(bulk_create_list)
+
+        return Response({
+            "assigned": assigned,
+            "skipped": skipped,
+            "errors": errors,
+            "detail": f"Asignados: {assigned}, Omitidos: {skipped}, Errores: {len(errors)}"
+        }, status=status.HTTP_200_OK)
 
 class IocListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    MAX_RESULTS = 50
+    DEFAULT_PAGE_SIZE = 50
 
     def get(self, request):
         q = request.query_params.get("search", "").strip()
@@ -366,10 +535,11 @@ class IocListView(APIView):
             IocEntry.objects
             .select_related("ioc_type")
             .prefetch_related("tools")
-            .order_by("-created_at")
+            .order_by("-ingestion_attempts", "-created_at")
         )
 
         type_filter = request.query_params.get("type", "").strip()
+        status_filter = request.query_params.get("status", "").strip()
         date_start = request.query_params.get("date_start")
         date_end = request.query_params.get("date_end")
 
@@ -381,11 +551,13 @@ class IocListView(APIView):
 
         if type_filter:
             qs = qs.filter(ioc_type__name__iexact=type_filter)
+            
+        if status_filter:
+            qs = qs.filter(status__iexact=status_filter)
 
         if date_start:
             try:
                 dt_start = datetime.strptime(date_start, "%Y-%m-%d")
-                # Make aware if timezone support is active
                 current_tz = timezone.get_current_timezone()
                 dt_start = timezone.make_aware(datetime.combine(dt_start, datetime.min.time()), current_tz)
                 qs = qs.filter(created_at__gte=dt_start)
@@ -401,10 +573,67 @@ class IocListView(APIView):
             except ValueError:
                 pass
 
-        qs = qs[:self.MAX_RESULTS]
+        # Paginación
+        total_count = qs.count()
+        try:
+            page = max(int(request.query_params.get("page", 1)), 1)
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            page_size = min(max(int(request.query_params.get("page_size", self.DEFAULT_PAGE_SIZE)), 1), 200)
+        except (ValueError, TypeError):
+            page_size = self.DEFAULT_PAGE_SIZE
 
-        serializer = IocEntrySerializer(qs, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        import math
+        total_pages = max(math.ceil(total_count / page_size), 1)
+        offset = (page - 1) * page_size
+        page_qs = qs[offset:offset + page_size]
+
+        serializer = IocEntrySerializer(page_qs, many=True)
+        return Response({
+            "results": serializer.data,
+            "count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
+        }, status=status.HTTP_200_OK)
+
+
+import csv
+
+class ExportCsvStrategyView(APIView):
+    """
+    Exportación Universal a CSV usando Patrón Strategy (XP).
+    Recibe una lista de objetos y los convierte a CSV.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        items = request.data.get('items', [])
+        headers = request.data.get('headers', [])
+        filename = request.data.get('filename', 'export.csv')
+
+        if not items:
+            return Response({'detail': 'No hay items para exportar'}, status=400)
+
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        writer = csv.writer(response)
+        
+        if headers:
+            writer.writerow(headers)
+        elif items and isinstance(items[0], dict):
+            headers = list(items[0].keys())
+            writer.writerow(headers)
+
+        for item in items:
+            if isinstance(item, dict):
+                writer.writerow([item.get(h, '') for h in headers])
+            else:
+                writer.writerow([item])
+
+        return response
 
 
 class ExportClassifiedView(APIView):
@@ -413,6 +642,7 @@ class ExportClassifiedView(APIView):
     def post(self, request):
         items = request.data.get('items', [])
         filename_prefix = request.data.get('filename_prefix', 'iocs').strip()
+        defang = request.data.get('defang', False)
         
         # Sanitize filename (remove paths and extension)
         filename_prefix = os.path.basename(filename_prefix).rsplit('.', 1)[0]
@@ -433,30 +663,53 @@ class ExportClassifiedView(APIView):
             detected_type = item.get('detected_type') if isinstance(item, dict) else None
             if not detected_type:
                 detected_type = detect_ioc_type(val) or 'Desconocido'
-            
+
+            if detected_type.lower() == 'hash':
+                from .utils import detect_hash_algorithm
+                algo = detect_hash_algorithm(val)
+                if algo:
+                    detected_type = f"Hash-{algo.upper()}"
+
             grouped.setdefault(detected_type, []).append(val)
 
         # Create ZIP
         buffer = io.BytesIO()
+        date_str = timezone.now().strftime("%d-%m-%Y")
+        # Replace underscores with hyphens in prefix
+        filename_prefix = filename_prefix.replace("_", "-")
+
         with zipfile.ZipFile(buffer, 'w') as zf:
+            combined_hashes = []
             for ioc_type, values in grouped.items():
+                # Aplicar defanging si está activado (excepto hashes)
+                if defang:
+                    values = [apply_defanging(v, ioc_type) for v in values]
                 content = "\n".join(values)
-                fname = f"{filename_prefix}_{ioc_type}.txt"
+                fname = f"{filename_prefix}-bloqueo-de-ioc-{date_str}-{ioc_type}.txt"
                 zf.writestr(fname, content)
+
+                if ioc_type.upper() in ("HASH-MD5", "HASH-SHA256"):
+                    combined_hashes.extend(values)
+            
+            if combined_hashes:
+                content_combined = "\n".join(combined_hashes)
+                fname_combined = f"{filename_prefix}-bloqueo-de-ioc-{date_str}-Hash-Combined.txt"
+                zf.writestr(fname_combined, content_combined)
 
         buffer.seek(0)
         response = HttpResponse(buffer.read(), content_type='application/zip')
-        response['Content-Disposition'] = f'attachment; filename="{filename_prefix}_classified.zip"'
+        response['Content-Disposition'] = f'attachment; filename="{filename_prefix}-classified.zip"'
         return response
 
 
 class ExportIngestedTxtView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def _build_txt_response(self, queryset, filename):
+    def _build_txt_response(self, queryset, filename, defang=False):
         def line_iterator():
             for value in queryset.iterator(chunk_size=1000):
-                yield f"{smart_str(value)}\n"
+                out = apply_defanging(value) if defang else value
+                yield f"{smart_str(out)}\n"
 
         response = HttpResponse(
             line_iterator(),
@@ -467,6 +720,7 @@ class ExportIngestedTxtView(APIView):
 
     def get(self, request):
         batch = request.GET.get("batch")
+        defang = request.GET.get("defang", "false").lower() == "true"
 
         qs = (
             IocEntry.objects
@@ -480,7 +734,7 @@ class ExportIngestedTxtView(APIView):
             qs = qs.filter(status=IocEntry.STATUS_BLOCKED)
 
         values = qs.values_list("value", flat=True)
-        return self._build_txt_response(values, "iocs_ingestados.txt")
+        return self._build_txt_response(values, "iocs_ingestados.txt", defang=defang)
 
     def post(self, request):
         items = request.data.get("items", [])
@@ -503,6 +757,8 @@ class ExportIngestedTxtView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        defang = request.data.get('defang', False)
+
         qs = (
             IocEntry.objects
             .filter(value__in=cleaned)
@@ -511,7 +767,7 @@ class ExportIngestedTxtView(APIView):
             .values_list("value", flat=True)
         )
 
-        return self._build_txt_response(qs, "iocs_ingestados.txt")
+        return self._build_txt_response(qs, "iocs_ingestados.txt", defang=defang)
 
 
 class ExportNotIngestedTxtView(APIView):
@@ -519,6 +775,7 @@ class ExportNotIngestedTxtView(APIView):
 
     def post(self, request):
         items = request.data.get('items', [])
+        defang = request.data.get('defang', False)
         if not isinstance(items, list):
             return Response(
                 {'detail': 'items debe ser una lista'},
@@ -560,6 +817,8 @@ class ExportNotIngestedTxtView(APIView):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for ioc_type, values in classified.items():
+                if defang:
+                    values = [apply_defanging(v, ioc_type) for v in values]
                 zf.writestr(
                     f"{ioc_type}.txt",
                     "\n".join(values) + "\n"
@@ -761,10 +1020,11 @@ class BulkChangeStateView(APIView):
         errors = []
 
         for v in set(lines):
-            if is_invalid_value(v):
-                errors.append({"value": v, "error": "invalid/placeholder"})
+            cleaned_v = remove_defanging(v)
+            if is_invalid_value(cleaned_v):
+                errors.append({"value": cleaned_v, "error": "invalid/placeholder"})
             else:
-                clean_values.append(v)
+                clean_values.append(cleaned_v)
 
         if not clean_values:
             return Response(
@@ -969,27 +1229,29 @@ class GenerarReporteView(APIView):
             f"REPORTE Artemis - Detallado",
             f"Desde {start_date.isoformat()} Hasta {end_date.isoformat()}",
             "",
-            f"{'Fuente':<25} {'Tipo':<15} {'Indicador':<45} {'Herramienta(s)':<40} {'Fecha creación':<20}",
-            "-" * 145
+            f"{'Fuente':<30} {'Tipo':<15} {'Indicador':<70} {'Herramienta(s)':<55} {'Fecha creación':<20}",
+            "-" * 195
         ]
 
         # Optimización: prefetch de tools -> tool para evitar N+1
         qs = qs.select_related('ioc_type').prefetch_related('tools__tool').order_by('created_at')
 
         for i in qs:
-            fuente = (i.source or "Sin fuente")[:24]
+            fuente = (i.source or "Sin fuente")[:29]
             tipo = (i.ioc_type.name if getattr(i, 'ioc_type', None) else "Desconocido")[:14]
-            indicador = (i.value or "N/A")[:44]
+            # Hashtags max length 64 (SHA256), URLs can be long
+            indicador = (i.value or "N/A")[:69]
 
             # Uso de la relación precargada (python-side)
-            # i.tools.all() devuelve objetos IocTool. Accedemos a .tool.name
-            tool_names = [t.tool.name for t in i.tools.all()]
-            herramientas = (", ".join(tool_names) or "Sin herramienta")[:39]
+            tool_names = [t.tool.name for t in i.tools.all() if t.tool]
+            herramientas = (", ".join(tool_names) or "Sin herramienta")[:54]
 
-            fecha = i.created_at.strftime("%Y-%m-%d %H:%M")
+            from django.utils import timezone
+            fecha_local = timezone.localtime(i.created_at) if i.created_at else None
+            fecha = fecha_local.strftime("%Y-%m-%d %H:%M") if fecha_local else "Desconocida"
 
             lines.append(
-                f"{fuente:<25} {tipo:<15} {indicador:<45} {herramientas:<40} {fecha:<20}"
+                f"{fuente:<30} {tipo:<15} {indicador:<70} {herramientas:<55} {fecha:<20}"
             )
 
         return "\n".join(lines)
@@ -999,6 +1261,7 @@ class ExportIngestedByBatchView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, batch_id):
+        defang = request.GET.get("defang", "false").lower() == "true"
         iocs = (
             IocEntry.objects
             .filter(upload_batch=batch_id)
@@ -1021,6 +1284,8 @@ class ExportIngestedByBatchView(APIView):
                 grouped.setdefault(tipo, []).append(ioc.value)
 
             for tipo, values in grouped.items():
+                if defang:
+                    values = [apply_defanging(v, tipo) for v in values]
                 content = "\n".join(values) + "\n"
                 zip_file.writestr(f"{tipo}.txt", content)
 
@@ -1141,43 +1406,72 @@ class ReportesAnalisisTxtView(APIView):
         except Exception:
             return Response({'error': 'Invalid file encoding'}, status=400)
             
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
+        lines = [remove_defanging(l) for l in raw_lines]
         
         existing = IocEntry.objects.filter(value__in=lines).select_related('ioc_type').prefetch_related('tools')
         existing_map = {ioc.value.lower(): ioc for ioc in existing}
         
-        out_lines = []
-        out_lines.append("=" * 60)
-        out_lines.append(" REPORTE DE ANALISIS DE INDICADORES CARGADOS")
-        out_lines.append("=" * 60)
-        out_lines.append(f"Total procesados en TXT: {len(lines)}\n")
-        
         found_count = 0
         not_found_count = 0
         
+        # Calcular ancho dinámico para la columna 'Indicador' basado en el más largo
+        max_ioc_len = max([len(l) for l in lines] + [45]) if lines else 45
+        
+        detail_lines = []
+        header = f"| {'#'.ljust(6)} | {'Estado'.ljust(14)} | {'Indicador'.ljust(max_ioc_len)} | {'Tipo'.ljust(12)} | {'Herramientas'.ljust(35)} | {'Fecha'.ljust(16)} |"
+        divisor = "-" * len(header)
+        
+        detail_lines.append(divisor)
+        detail_lines.append(header)
+        detail_lines.append(divisor)
+        
         for idx, line in enumerate(lines, 1):
             val_lower = line.lower()
+            idx_str = str(idx).ljust(6)
+            
+            line_str = line.ljust(max_ioc_len)
+            
             if val_lower in existing_map:
                 ioc = existing_map[val_lower]
                 tool_names = [t.tool.name for t in ioc.tools.all() if t.tool]
-                tools_str = ", ".join(tool_names) if tool_names else "Ninguna"
-                tipo = ioc.ioc_type.name if ioc.ioc_type else "Desconocido"
+                tools_raw = ", ".join(tool_names) if tool_names else "Ninguna"
+                if len(tools_raw) > 35:
+                    tools_raw = tools_raw[:32] + "..."
+                tools_str = tools_raw.ljust(35)
+                
+                tipo_raw = ioc.ioc_type.name if ioc.ioc_type else "Desconocido"
+                if len(tipo_raw) > 12:
+                    tipo_raw = tipo_raw[:9] + "..."
+                tipo = tipo_raw.ljust(12)
+                
                 try:
-                    date_str = timezone.localtime(ioc.created_at).strftime('%Y-%m-%d %H:%M') if ioc.created_at else 'Desconocida'
+                    dt = timezone.localtime(ioc.created_at).strftime('%Y-%m-%d %H:%M') if ioc.created_at else 'Desconocida'
                 except Exception:
-                    date_str = str(ioc.created_at)
-
-                out_lines.append(f"{idx}. {line} -> INGESTADO")
-                out_lines.append(f"   Tipo: {tipo} | Estado: {ioc.status} | Fecha: {date_str}")
-                out_lines.append(f"   Herramientas: {tools_str}\n")
+                    dt = str(ioc.created_at)[:16]
+                date_str = dt.ljust(16)
+                
+                estado = "INGESTADO".ljust(14)
+                
+                detail_lines.append(f"| {idx_str} | {estado} | {line_str} | {tipo} | {tools_str} | {date_str} |")
                 found_count += 1
             else:
-                out_lines.append(f"{idx}. {line} -> NO INGESTADO\n")
+                estado = "NO INGESTADO".ljust(14)
+                detail_lines.append(f"| {idx_str} | {estado} | {line_str} | {'-'.ljust(12)} | {'-'.ljust(35)} | {'-'.ljust(16)} |")
                 not_found_count += 1
-                
-        out_lines.insert(3, f"Encontrados (Ingestados): {found_count}")
-        out_lines.insert(4, f"No encontrados: {not_found_count}")
-        out_lines.insert(5, "-" * 60 + "\n")
+        
+        detail_lines.append(divisor)
+        
+        out_lines = []
+        out_lines.append("=" * len(header))
+        out_lines.append(" REPORTE DE ANALISIS DE INDICADORES CARGADOS")
+        out_lines.append("=" * len(header))
+        out_lines.append(f"Total procesados en TXT: {len(lines)}")
+        out_lines.append(f"Encontrados (Ingestados): {found_count}")
+        out_lines.append(f"No encontrados: {not_found_count}")
+        out_lines.append("")
+        
+        out_lines.extend(detail_lines)
         
         content = "\n".join(out_lines)
         response = HttpResponse(content, content_type='text/plain')

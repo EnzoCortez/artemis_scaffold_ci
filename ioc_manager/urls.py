@@ -20,11 +20,11 @@ from .views import (
     ExportIngestedByBatchView, 
     ChangeIocStateView,
     ExportClassifiedView,
-    logout_view, 
+    ExportCsvStrategyView,
     logout_view, 
     login_view,
 )
-from .views_maintenance import DBLogSizeView, DBLogShrinkView, DashboardStatsView
+from .views_maintenance import DBLogSizeView, DBLogShrinkView, DashboardStatsView, UploadHistoryView
 from .views_tool_load import ValidateToolInitialLoadView, ExecuteToolInitialLoadView
 
 urlpatterns = [
@@ -43,6 +43,7 @@ urlpatterns = [
     path('api/export/ingested/', ExportIngestedTxtView.as_view(), name='export_ingested'),
     path('api/export/not-ingested/', ExportNotIngestedTxtView.as_view(), name='export_not_ingested'),
     path('api/export/classified/', ExportClassifiedView.as_view(), name='export_classified'),
+    path('api/export/csv/', ExportCsvStrategyView.as_view(), name='export_csv'),
     
     # Tool specific load
     path('api/tool-initial-load/validate/', ValidateToolInitialLoadView.as_view(), name='validate_tool_load'),
@@ -60,6 +61,8 @@ urlpatterns = [
     path('api/reportes/analisis-txt/', ReportesAnalisisTxtView.as_view()),
     path("api/iocs/bulk-search/", IocBulkSearchView.as_view()),
     path('api/iocs/validate-ingest/', ValidateAndIngestView.as_view()),
+    path('api/iocs/assign-tool-manual/', views.AssignToolManualView.as_view()),
+    path('api/iocs/assign-tool-bulk/', views.AssignToolBulkView.as_view()),
     
     # Single Item Routes
     path('api/change-state/<int:pk>/', ChangeIocStateView.as_view(), name='change_state_single'),
@@ -73,4 +76,5 @@ urlpatterns = [
     path('api/stats/dashboard/', DashboardStatsView.as_view(), name='dashboard_stats'),
     path('api/maintenance/db-log-size/', DBLogSizeView.as_view(), name='db_log_size'),
     path('api/maintenance/db-log-shrink/', DBLogShrinkView.as_view(), name='db_log_shrink'),
+    path('api/stats/upload-history/', UploadHistoryView.as_view(), name='upload_history'),
 ]
