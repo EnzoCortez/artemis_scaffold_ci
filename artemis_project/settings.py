@@ -104,6 +104,19 @@ DATABASES = {
     }
 }
 
+# Base de datos alternativa para CI/Jenkins (tests sin SQL Server)
+if os.environ.get('DB_ENGINE', '').lower() == 'sqlite':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / os.environ.get('DB_NAME', 'artemis_ci.sqlite3'),
+        }
+    }
+    # El historial de migraciones esta pensado para SQL Server; en CI se crea
+    # el esquema directamente desde los modelos actuales.
+    MIGRATION_MODULES = {'ioc_manager': None}
+    TEST_OUTPUT_DIR = 'test-reports'  # reportes JUnit para Jenkins
+
 # Password Validation
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

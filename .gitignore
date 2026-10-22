@@ -19,3 +19,7 @@ snyk.exe
 
 # Logs
 *.log
+
+# CI
+.venv/
+test-reports/
