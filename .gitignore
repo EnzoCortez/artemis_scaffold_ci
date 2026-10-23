@@ -23,3 +23,5 @@ snyk.exe
 # CI
 .venv/
 test-reports/
+reports/
+dist/
