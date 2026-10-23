@@ -12,7 +12,7 @@ class DefangingTests(TestCase):
         self.assertEqual(apply_defanging("https://evil.domain.org"), "hxxps://evil[.]domain[.]org")
 
     def test_apply_defanging_domain(self):
-        self.assertEqual(apply_defanging("google.com"), "google[.]com")
+        self.assertEqual(apply_defanging("google.com"), "google.com")  # FALLO INTENCIONAL para demostrar la notificacion
 
     def test_apply_defanging_hash(self):
         # Los hashes no deben sufrir ofuscación
