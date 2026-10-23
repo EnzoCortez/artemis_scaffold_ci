@@ -68,3 +68,7 @@ Al iniciar, el pipeline marca el commit como **pending** en GitHub.
 | Selectiva por cambios | Mismo build de `feature/demo-docs` (solo cambia docs) | "Calidad y pruebas" omitida |
 | Entrega | PR `develop` → `main`, merge | Etapa Entrega y artefacto `.zip` |
 | Quality gate | Agregar código con errores de estilo en una feature | Build ⚠️ INESTABLE |
+
+## Historial
+
+- Rama `feature/demo-docs`: commit que solo modifica documentación, usado para demostrar la ejecución selectiva.
